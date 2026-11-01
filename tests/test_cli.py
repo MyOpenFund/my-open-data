@@ -22,7 +22,7 @@ def test_approve_then_publish_exit_codes(cfg, monkeypatch, capsys):
     _env(monkeypatch, cfg)
     land(cfg, ENTITY_OBSERVATIONS, [obs_rows(known_at=NOW)])
     assert main(["publish"]) == 3  # not approved yet → quarantined → degraded
-    assert main(["contracts", "approve", "entity_observations", "1", "--by", "marc"]) == 0
+    assert main(["contracts", "approve", "entity_observations", "1", "--by", "reviewer"]) == 0
     land(cfg, ENTITY_OBSERVATIONS, [obs_rows()])
     capsys.readouterr()
     assert main(["publish"]) == 0
@@ -31,7 +31,7 @@ def test_approve_then_publish_exit_codes(cfg, monkeypatch, capsys):
 
 def test_approve_unknown_contract(cfg, monkeypatch):
     _env(monkeypatch, cfg)
-    assert main(["contracts", "approve", "nope", "1", "--by", "marc"]) == 1
+    assert main(["contracts", "approve", "nope", "1", "--by", "reviewer"]) == 1
 
 
 def test_missing_env_is_a_clean_error(monkeypatch, capsys):

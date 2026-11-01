@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python: ["3.11", "3.13"]
+        python: ["3.11", "3.12", "3.13"]
     services:
       postgres:
         image: postgres:16
@@ -27,3 +27,4 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check src tests && ruff format --check src tests
       - run: pytest -q -W error
+      - run: python -m build && twine check --strict dist/*

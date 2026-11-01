@@ -6,9 +6,9 @@
 producer ──writer──▶ landing/<table>/<batch_id>/{data.parquet, batch.json}
                          │
                          ▼  myopendata publish   (the only writer to the lake; one run at a time)
-             audit ─▶ quarantine/  (reason.json)          duplicates ─▶ _duplicates/
+             audit ─▶ landing/_quarantine/  (reason.json)    replays ─▶ landing/_duplicates/
                │
-               ▼  one DuckLake transaction per batch
+               ▼  one DuckLake transaction per batch, then the batch moves to landing/_published/
    lake.facts.<name>_v<major>   lake.ref.{contracts, batches, entity_identifiers, entity_attributes}
                │                commit message = "publish <table> <batch_id>"
                ▼
@@ -22,7 +22,14 @@ producer ──writer──▶ landing/<table>/<batch_id>/{data.parquet, batch.j
   checksum, re-validates the rows against the approved contract, recomputes the batch id and the
   row hash, then publishes. Failures are quarantined with a `reason.json` and never stop the other
   batches. Existing directories are never overwritten. A file lock (`landing/.publisher.lock`)
-  refuses a second concurrent publisher.
+  refuses a second concurrent publisher. A batch that hit an infrastructure error stays in place
+  and is retried by the next run.
+* **Recovering a quarantined batch:** fix the cause (approve the contract, fix the producer and
+  land a new batch, or for an identity conflict correct the source data), then either land a new
+  batch or move the directory back from `_quarantine/<table>/` to `landing/<table>/` and delete
+  its `reason.json`. The publisher audits it again from scratch.
+* A writer killed mid-write leaves a `landing/<table>/.tmp-*` directory; the publisher ignores
+  these, and they can be deleted when no writer is running.
 * **The reader** attaches the lake read-only, pins the session to UTC, forbids file access outside
   the lake, attaching databases and changing settings, and accepts only single-statement filters
   and recipes. Filters and recipe SQL are still trusted caller code: a server exposing the reader
@@ -31,7 +38,8 @@ producer ──writer──▶ landing/<table>/<batch_id>/{data.parquet, batch.j
 ## Two clocks
 
 `valid_date` / `known_at` are the business truth: `read_asof(t)` returns, per natural key, the
-latest row with `known_at <= t`; on a tie, the batch published last wins. DuckLake snapshots are
+latest row with `known_at <= t`; on a tie, the batch published last wins (by the publisher's
+wall clock: keep the publisher host on NTP). DuckLake snapshots are
 the audit trail: `read_asof(..., snapshot=n)` shows what the store held at version `n`. Every
 result carries `myopendata.as_of` (and snapshot / recipe) in its schema metadata.
 
@@ -59,7 +67,14 @@ result carries `myopendata.as_of` (and snapshot / recipe) in its schema metadata
   would hold two values of a single-valued scheme (`cik, lei, cb_code`, configurable), is an
   `entity_conflict`.
 * `ref.entity_attributes` (name, country) is SCD2, rebuilt from every published observation of
-  the touched entities, so a backfill lands in the right interval.
+  the touched entities, so a backfill lands in the right interval. It is **current knowledge**,
+  not as-of: joining it in a historical read can show a name learnt later. For look-ahead-free
+  identity, read `entity_observations` with `read_asof` (an as-of entity reader comes later).
+* The policy is configuration: `MYOPENDATA_RESOLVING_SCHEMES` and
+  `MYOPENDATA_SINGLE_VALUED_SCHEMES` (comma-separated). Extending the identifier vocabulary
+  itself changes the standard contracts' fingerprint, so it ships as a new major of them.
+* A contract marks itself as an identity dataset with `resolves_entities=True`; it is published
+  before other data in each run.
 
 ## Exit codes (silent-failure doctrine)
 
@@ -78,7 +93,21 @@ the run could not start, crashed, or a batch hit an infrastructure error. Every 
   for anything shared.
 * pyarrow `and_` / `or_` propagate nulls; row checks use the Kleene variants.
 
+## Reader for servers (MCP)
+
+Use `read_asof(dataset, as_of, filters={col: value | [values]}, columns=[...], limit=n)`: column
+names are checked against the dataset, values are bound as query parameters. `describe(dataset)`
+returns the columns with types, vocabularies and documentation, the natural key and the licence.
+Never forward free text into `where` or a recipe.
+
+## CI
+
+`push` runs on every branch so a branch is tested before its PR exists; `pull_request` runs on
+PRs to `main` (a PR from a branch of this repo therefore runs twice). Each run lints, tests on
+Python 3.11–3.13 with a Postgres catalogue, builds the package and checks its metadata.
+
 ## Not in v0
 
 `assemble(save=True)` and the metrics recipes (consolidated fundamentals, leverage, TTM) arrive
-with the metrics step. Production topology is decided before the first production publish.
+with the metrics step. ntfy notification of degraded or fatal runs belongs to the job runner, as
+for the producers. Production topology is decided before the first production publish.

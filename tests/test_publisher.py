@@ -419,9 +419,9 @@ def test_fatal_when_catalogue_unreachable(tmp_path):
 
 
 def test_approve_records_fingerprint(cfg):
-    approve_contract(cfg, FUNDAMENTALS, "marc")
+    approve_contract(cfg, FUNDAMENTALS, "reviewer")
     assert q(cfg, "SELECT fingerprint, approved_by FROM lake.ref.contracts") == [
-        (FUNDAMENTALS.fingerprint(), "marc")
+        (FUNDAMENTALS.fingerprint(), "reviewer")
     ]
 
 
@@ -461,3 +461,46 @@ def test_conflicting_approval_is_refused_and_reapproval_is_a_noop(approved):
     assert q(approved, "SELECT count(*) FROM lake.ref.contracts WHERE name = 'fundamentals'") == [
         (1,)
     ]
+
+
+def test_infrastructure_error_on_one_batch_is_fatal_but_others_publish(approved, monkeypatch):
+    import duckdb
+
+    from myopendata.publisher import publish as pub
+
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    real = pub._Run.commit
+
+    def flaky(self, c, *a, **k):
+        if c.name == "fundamentals":
+            raise duckdb.IOException("disk gone")
+        return real(self, c, *a, **k)
+
+    monkeypatch.setattr(pub._Run, "commit", flaky)
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 1 and rep.errors[0]["error"].startswith("IOException")
+    assert [p["contract"] for p in rep.published] == ["entity_observations_v1"]
+    assert list((approved.landing / "fundamentals_v1").iterdir())  # left in place for a retry
+
+
+def test_move_never_overwrites(tmp_path):
+    from myopendata.publisher.publish import _move
+
+    for content in ("first", "second"):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "f").write_text(content)
+        _move(src, tmp_path, "_published", "t_v1", "b" * 32, run_id=content)
+    kept = sorted(p.name for p in (tmp_path / "_published" / "t_v1").iterdir())
+    assert kept == ["b" * 32, "b" * 32 + "-second"]
+    assert (tmp_path / "_published" / "t_v1" / ("b" * 32) / "f").read_text() == "first"
+
+
+def test_manifest_with_wrong_types_is_invalid(approved):
+    ref = land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    m = json.loads((ref.path / "batch.json").read_text())
+    m["producer"] = {"name": "x"}
+    (ref.path / "batch.json").write_text(json.dumps(m))
+    rep = publish_pending(approved, now=NOW)
+    assert rep.quarantined[0]["reasons"] == ["manifest_invalid"]

@@ -23,6 +23,8 @@ pip install "my-open-data[reader]"     # analyses, MCP, strategies
 | `MYOPENDATA_CATALOG` | DuckLake catalogue: `postgres:dbname=... host=... user=...`, or a file path (tests, single user) |
 | `MYOPENDATA_DATA_INLINING_ROW_LIMIT` | Default `0`: every batch becomes a Parquet file |
 | `MYOPENDATA_KNOWN_AT_FUTURE_TOLERANCE_S` | Clock-skew tolerance, default `300` |
+| `MYOPENDATA_RESOLVING_SCHEMES` | Identifier schemes that may merge entities, default `cik,lei,isin,figi,cb_code,national_id` |
+| `MYOPENDATA_SINGLE_VALUED_SCHEMES` | Schemes an entity holds one value of, default `cik,lei,cb_code` |
 
 ## Reader interface (stable for v0.x)
 
@@ -34,6 +36,9 @@ store = Store.open()                                   # config from env (or `wi
 store.datasets()                                       # name, major, version, kind, licence, table
 t = store.read_asof("fundamentals", datetime(2025, 12, 1, tzinfo=timezone.utc),
                     where="concept = 'LongTermDebt'")  # pyarrow.Table, latest known per key
+t1 = store.read_asof("fundamentals", filters={"source_code": ["sec"]},
+                     columns=["entity_id", "concept", "value"], limit=100)  # bound, safe for servers
+store.describe("fundamentals")                         # columns, docs, natural key, licence
 t0 = store.read_asof("fundamentals", snapshot=42)      # what the store held at DuckLake version 42
 r = Recipe("debt_by_source", "1.0.0", {"f": "fundamentals"},
            "SELECT source_code, sum(value) AS debt FROM f GROUP BY 1")
@@ -58,7 +63,7 @@ ship with this library.
 
 ```
 myopendata contracts list
-myopendata contracts approve fundamentals 1 --by <name>   # reviewed step, once per major
+myopendata contracts approve fundamentals 1 --by <name>   # reviewed step; refuses conflicting definitions
 myopendata publish                                          # exit 0 ok · 1 fatal · 3 degraded
 ```
 
