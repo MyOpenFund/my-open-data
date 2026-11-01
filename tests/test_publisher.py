@@ -504,3 +504,9 @@ def test_manifest_with_wrong_types_is_invalid(approved):
     (ref.path / "batch.json").write_text(json.dumps(m))
     rep = publish_pending(approved, now=NOW)
     assert rep.quarantined[0]["reasons"] == ["manifest_invalid"]
+
+
+def test_explicit_empty_policy_is_honoured(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    rep = publish_pending(approved, now=NOW, resolving_schemes=())
+    assert rep.quarantined[0]["reasons"][0].startswith("subject_not_resolvable")

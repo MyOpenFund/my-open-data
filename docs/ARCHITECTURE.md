@@ -55,7 +55,8 @@ result carries `myopendata.as_of` (and snapshot / recipe) in its schema metadata
   A strictly additive MINOR (new nullable columns appended, everything else equal, higher version)
   is auto-approved; any other change within a major is refused (`contract_fingerprint_mismatch`).
   The fingerprint covers columns, types, nullability, vocabularies, natural key, checks,
-  partitioning and licence.
+  partitioning, licence and the identity flag. Documentation is stored with the first approval
+  of a definition; a doc-only patch does not refresh it in v0.
 
 ## Entities (decisions D3, D4)
 

@@ -89,6 +89,11 @@ def validate_contract(c: Contract) -> None:
                 raise ContractError(f"{c.name}: an identity dataset needs column {k}")
         if c.entity_column_pair != ("subject_scheme", "subject_value"):
             raise ContractError(f"{c.name}: identity datasets resolve on the subject columns")
+        if not set(c.column("id_scheme").allowed or ("?",)) <= set(ID_SCHEMES):
+            raise ContractError(f"{c.name}: id_scheme must allow only {ID_SCHEMES}")
+        for k in IDENTITY_COLUMNS:
+            if c.column(k).type != pa.string():
+                raise ContractError(f"{c.name}.{k}: identity columns are strings")
     for col in c.columns:
         if pa.types.is_nested(col.type):
             raise ContractError(f"{c.name}.{col.name}: nested types are not supported")

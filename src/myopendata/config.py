@@ -58,13 +58,33 @@ class StoreConfig:
         return cls(
             data_root=Path(os.environ[ENV_DATA_ROOT]),
             catalog=os.environ[ENV_CATALOG],
-            data_inlining_row_limit=int(os.environ.get(ENV_INLINING, "0")),
-            known_at_future_tolerance_s=int(os.environ.get(ENV_FUTURE_TOLERANCE, "300")),
+            data_inlining_row_limit=_int(ENV_INLINING, 0),
+            known_at_future_tolerance_s=_int(ENV_FUTURE_TOLERANCE, 300),
             resolving_schemes=_schemes(ENV_RESOLVING, DEFAULT_RESOLVING_SCHEMES),
             single_valued_schemes=_schemes(ENV_SINGLE_VALUED, DEFAULT_SINGLE_VALUED_SCHEMES),
         )
 
 
+def _int(var: str, default: int) -> int:
+    raw = os.environ.get(var, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise RuntimeError(f"{var} must be an integer, got {raw!r}") from None
+
+
 def _schemes(var: str, default: tuple[str, ...]) -> tuple[str, ...]:
-    raw = os.environ.get(var)
-    return tuple(x.strip() for x in raw.split(",") if x.strip()) if raw else default
+    from myopendata.contracts.rules import ID_SCHEMES
+
+    raw = os.environ.get(var, "").strip()
+    if not raw:
+        return default
+    out = tuple(x.strip() for x in raw.split(",") if x.strip())
+    unknown = sorted(set(out) - set(ID_SCHEMES))
+    if not out or unknown:
+        raise RuntimeError(
+            f"{var}: unknown or empty schemes {unknown or raw!r}; known {ID_SCHEMES}"
+        )
+    return out

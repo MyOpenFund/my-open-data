@@ -269,8 +269,10 @@ def publish_pending(
                 con,
                 contracts,
                 rep,
-                resolving_schemes or cfg.resolving_schemes,
-                single_valued_schemes or cfg.single_valued_schemes,
+                cfg.resolving_schemes if resolving_schemes is None else resolving_schemes,
+                cfg.single_valued_schemes
+                if single_valued_schemes is None
+                else single_valued_schemes,
                 now,
             )
             run.all()

@@ -278,3 +278,34 @@ def test_describe_carries_columns_docs_and_key(store):
     assert cols["frequency"]["allowed"] == ["annual", "semiannual", "quarterly"]
     assert "Normalised concept" in cols["concept"]["doc"]
     assert d["natural_key"][-1] == "source_code"
+
+
+def test_none_in_filters_is_refused(store):
+    with pytest.raises(ValueError, match="None"):
+        store.read_asof("fundamentals", filters={"confidence": None})
+
+
+def test_huge_limit_is_refused(store):
+    with pytest.raises(ValueError, match="limit"):
+        store.read_asof("fundamentals", limit=10**30)
+
+
+def test_approved_but_unpublished_minor_columns_are_not_offered(store, approved):
+    import dataclasses
+
+    import pyarrow as pa
+
+    from myopendata.contracts.base import Column
+    from myopendata.publisher import approve_contract
+
+    store.close()
+    minor = dataclasses.replace(
+        FUNDAMENTALS,
+        version="1.1.0",
+        columns=FUNDAMENTALS.columns + (Column("segment", pa.string()),),
+    )
+    approve_contract(approved, minor, "reviewer")
+    with Store.open(approved) as s:
+        assert "segment" not in {c["name"] for c in s.describe("fundamentals")["columns"]}
+        with pytest.raises(ValueError, match="unknown column"):
+            s.read_asof("fundamentals", columns=["segment"])

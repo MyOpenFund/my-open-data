@@ -167,3 +167,21 @@ def test_resolution_policy_comes_from_env(monkeypatch, tmp_path):
     cfg = StoreConfig.from_env()
     assert cfg.resolving_schemes == ("cik", "lei")
     assert cfg.single_valued_schemes == ("cik", "lei", "cb_code")
+
+
+@pytest.mark.parametrize(
+    "var, value",
+    [
+        ("MYOPENDATA_RESOLVING_SCHEMES", "CIK"),
+        ("MYOPENDATA_RESOLVING_SCHEMES", ","),
+        ("MYOPENDATA_DATA_INLINING_ROW_LIMIT", "x"),
+    ],
+)
+def test_bad_env_values_are_clear_errors(monkeypatch, tmp_path, var, value):
+    from myopendata.config import StoreConfig
+
+    monkeypatch.setenv("MYOPENDATA_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("MYOPENDATA_CATALOG", str(tmp_path / "m.ducklake"))
+    monkeypatch.setenv(var, value)
+    with pytest.raises(RuntimeError, match=var):
+        StoreConfig.from_env()

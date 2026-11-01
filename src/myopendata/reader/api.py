@@ -161,6 +161,21 @@ class Store:
                 )
         return out
 
+    def _table_columns(self, d: _Dataset) -> set[str]:
+        """Columns that exist in the published table (an approved but not yet published MINOR
+        may declare more)."""
+        schema = "facts" if d.kind == "fact" else "derived"
+        rows = (
+            self.con.cursor()
+            .execute(
+                "SELECT column_name FROM duckdb_columns() WHERE database_name = 'lake' "
+                "AND schema_name = ? AND table_name = ?",
+                [schema, d.table],
+            )
+            .fetchall()
+        )
+        return {r[0] for r in rows}
+
     def describe(self, dataset: str) -> dict:
         """Everything a caller (or an MCP tool listing) needs to query a dataset correctly."""
         d = self._dataset(dataset)
@@ -172,7 +187,7 @@ class Store:
             "licence": d.licence,
             "doc": d.doc,
             "natural_key": list(d.natural_key),
-            "columns": [dict(c) for c in d.columns],
+            "columns": [dict(c) for c in d.columns if c["name"] in self._table_columns(d)],
             "added_by_publisher": ["entity_id", "batch_id"],
         }
 
@@ -225,16 +240,17 @@ class Store:
     ) -> pa.Table:
         """Rows knowable at as_of. filters = {column: value or list of values}, bound as query
         parameters (safe for untrusted input); columns = projection; limit = row cap.
-        where = free SQL for trusted callers only (one expression, never untrusted input)."""
+        where = free SQL for trusted callers only (one expression, no ? placeholders, never
+        untrusted input). LIMIT without an ORDER BY returns an arbitrary subset."""
         as_of = as_of or datetime.now(UTC)
         d = self._dataset(dataset)
         sql = self.asof_sql(dataset, as_of, snapshot=snapshot)
-        known = set(d.column_names)
+        known = set(d.column_names) & self._table_columns(d)
         for col in list(filters or {}) + list(columns or []):
             if col not in known:
                 raise ValueError(f"unknown column {col!r} for {d.table}")
         if limit is not None and (
-            isinstance(limit, bool) or not isinstance(limit, int) or limit < 0
+            isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit < 2**63
         ):
             raise ValueError("limit must be a non-negative int")
         clauses, params = [], []
@@ -242,6 +258,8 @@ class Store:
             values = list(value) if isinstance(value, (list, tuple, set)) else [value]
             if not values:
                 raise ValueError(f"empty filter list for {col!r}")
+            if any(v is None for v in values):
+                raise ValueError(f"None in filter for {col!r}: use where for IS NULL")
             clauses.append(f"{col} IN ({', '.join('?' * len(values))})")
             params += values
         con = self.con.cursor()
