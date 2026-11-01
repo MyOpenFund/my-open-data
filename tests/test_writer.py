@@ -90,3 +90,73 @@ def test_unknown_and_missing_columns_rejected(tmp_path):
 def test_empty_batch_rejected(tmp_path):
     with pytest.raises(BatchInvalid, match="empty_batch"):
         _write(tmp_path, [])
+
+
+def test_non_race_rename_error_is_raised(tmp_path):
+    from myopendata.contracts.rules import conform
+    from myopendata.writer.batch import batch_id_for, content_hash
+
+    t = conform(FUNDAMENTALS, table(FUNDAMENTALS, [fund_row()]), now=NOW)
+    bid = batch_id_for(FUNDAMENTALS, content_hash(t))
+    (tmp_path / "fundamentals_v1").mkdir()
+    (tmp_path / "fundamentals_v1" / bid).write_text("not a batch")
+    with pytest.raises(OSError):
+        _write(tmp_path, [fund_row()])
+    assert not list(tmp_path.glob("*/.tmp-*"))
+
+
+def test_failed_write_leaves_no_tmp_dir(tmp_path, monkeypatch):
+    import myopendata.writer.batch as b
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(b.pq, "write_table", boom)
+    with pytest.raises(OSError, match="disk full"):
+        _write(tmp_path, [fund_row()])
+    assert not list(tmp_path.glob("*/.tmp-*"))
+
+
+def test_manifest_hashes_match_the_file(tmp_path):
+    import pyarrow.parquet as pq
+
+    from myopendata.writer.batch import content_hash, file_sha256
+
+    ref = _write(tmp_path, [fund_row(), fund_row(concept="Revenue")], source_inputs=["b", "a"])
+    m = json.loads((ref.path / "batch.json").read_text())
+    assert m["source_inputs"] == ["a", "b"]
+    assert m["files"]["data.parquet"]["sha256"] == file_sha256(ref.path / "data.parquet")
+    assert m["content_sha256"] == content_hash(pq.read_table(ref.path / "data.parquet"))
+
+
+def test_hash_ignores_chunking_column_order_and_metadata():
+    from myopendata.contracts.rules import conform
+    from myopendata.writer.batch import content_hash
+
+    t = conform(FUNDAMENTALS, table(FUNDAMENTALS, [fund_row(), fund_row(concept="R")]), now=NOW)
+    chunked = pa.concat_tables([t.slice(0, 1), t.slice(1)])
+    permuted = conform(FUNDAMENTALS, t.select(list(reversed(t.column_names))), now=NOW)
+    meta = t.replace_schema_metadata({b"pandas": b"{}"})
+    assert content_hash(t) == content_hash(chunked) == content_hash(permuted) == content_hash(meta)
+
+
+def test_other_contract_version_gives_other_batch(tmp_path):
+    import dataclasses
+
+    a = _write(tmp_path, [fund_row()])
+    other = dataclasses.replace(FUNDAMENTALS, version="1.0.1")
+    b = write_batch(
+        other, table(other, [fund_row()]), landing_root=tmp_path, run_id="r", producer="t", now=NOW
+    )
+    assert a.batch_id != b.batch_id
+
+
+def test_default_clock_is_used_when_now_is_omitted(tmp_path):
+    ref = write_batch(
+        FUNDAMENTALS,
+        table(FUNDAMENTALS, [fund_row()]),
+        landing_root=tmp_path,
+        run_id="r",
+        producer="t",
+    )
+    assert json.loads((ref.path / "batch.json").read_text())["written_at"]
