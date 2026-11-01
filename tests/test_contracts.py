@@ -144,3 +144,26 @@ def test_fingerprint_covers_terms_and_layout(change):
 def test_same_definition_several_patches_keeps_highest():
     found = discover_contracts([_bad(version="1.0.7")])
     assert found[("fundamentals", 1)].version == "1.0.7"
+
+
+def test_identity_dataset_needs_identity_columns():
+    c = dataclasses.replace(FUNDAMENTALS, resolves_entities=True)
+    with pytest.raises(ContractError, match="identity dataset"):
+        validate_contract(c)
+
+
+def test_nested_columns_are_rejected():
+    c = _bad(columns=FUNDAMENTALS.columns + (Column("tags", pa.list_(pa.string())),))
+    with pytest.raises(ContractError, match="nested"):
+        validate_contract(c)
+
+
+def test_resolution_policy_comes_from_env(monkeypatch, tmp_path):
+    from myopendata.config import StoreConfig
+
+    monkeypatch.setenv("MYOPENDATA_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("MYOPENDATA_CATALOG", str(tmp_path / "m.ducklake"))
+    monkeypatch.setenv("MYOPENDATA_RESOLVING_SCHEMES", "cik, lei")
+    cfg = StoreConfig.from_env()
+    assert cfg.resolving_schemes == ("cik", "lei")
+    assert cfg.single_valued_schemes == ("cik", "lei", "cb_code")

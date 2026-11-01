@@ -27,8 +27,6 @@ from myopendata.contracts.registry import discover_contracts
 from myopendata.contracts.rules import BatchInvalid, conform, validate_contract
 from myopendata.lake import connect
 from myopendata.publisher.entities import (
-    DEFAULT_RESOLVING_SCHEMES,
-    DEFAULT_SINGLE_VALUED_SCHEMES,
     EntityConflict,
     UnresolvableSubject,
     load_links,
@@ -39,7 +37,6 @@ from myopendata.publisher.entities import (
 from myopendata.writer.batch import DATA, MANIFEST, batch_id_for, content_hash, file_sha256
 
 EXIT_OK, EXIT_FATAL, EXIT_DEGRADED = 0, 1, 3  # silent-failure doctrine
-FIRST = ("entity_observations",)  # published before anything that needs entities
 BATCH_ID_RE = re.compile(r"[0-9a-f]{32}")
 LOCK = ".publisher.lock"
 MANIFEST_KEYS = (
@@ -225,8 +222,8 @@ def publish_pending(
     cfg: StoreConfig,
     *,
     run_id: str | None = None,
-    resolving_schemes: tuple[str, ...] = DEFAULT_RESOLVING_SCHEMES,
-    single_valued_schemes: tuple[str, ...] = DEFAULT_SINGLE_VALUED_SCHEMES,
+    resolving_schemes: tuple[str, ...] | None = None,
+    single_valued_schemes: tuple[str, ...] | None = None,
     contracts: dict[tuple[str, int], Contract] | None = None,
     now: datetime | None = None,
 ) -> PublishReport:
@@ -249,7 +246,15 @@ def publish_pending(
             rep.fatal = f"{type(exc).__name__}: {exc}"
             return _finish(cfg, rep)
         try:
-            run = _Run(cfg, con, contracts, rep, resolving_schemes, single_valued_schemes, now)
+            run = _Run(
+                cfg,
+                con,
+                contracts,
+                rep,
+                resolving_schemes or cfg.resolving_schemes,
+                single_valued_schemes or cfg.single_valued_schemes,
+                now,
+            )
             run.all()
         except Exception as exc:  # noqa: BLE001 — doctrine: a crash becomes a fatal run report
             rep.fatal = f"{type(exc).__name__}: {exc}"
@@ -265,6 +270,7 @@ class _Run:
         self.cfg, self.con, self.contracts, self.rep = cfg, con, contracts, rep
         self.resolving, self.single_valued, self.now = resolving_schemes, single_valued_schemes, now
         self.links = load_links(con)
+        self.identity = {c.name for c in contracts.values() if c.resolves_entities}
 
     def all(self) -> None:
         batches = []
@@ -276,7 +282,8 @@ class _Run:
             if m is None:
                 self.quarantine(path, None, ["manifest_invalid"])
                 continue
-            batches.append((0 if m["contract"] in FIRST else 1, str(m["written_at"]), path, m))
+            first = 0 if m["contract"] in self.identity else 1  # entities before what needs them
+            batches.append((first, str(m["written_at"]), path, m))
         for _, _, path, m in sorted(batches, key=lambda b: b[:2] + (b[2].name,)):
             try:
                 self.one(path, m)
@@ -333,7 +340,7 @@ class _Run:
             _move(path, self.cfg.landing, "_duplicates", path.parent.name, bid, self.rep.run_id)
             return None
         new_links: list[tuple] = []
-        if c.name == "entity_observations":
+        if c.resolves_entities:
             try:
                 eids, new_links = resolve_observations(
                     t, self.links, self.resolving, self.single_valued
@@ -371,7 +378,7 @@ class _Run:
                     "INSERT INTO lake.ref.entity_identifiers VALUES (?, ?, ?, ?, ?, ?)",
                     [(*lk, bid) for lk in new_links],
                 )
-            if c.name == "entity_observations":
+            if c.resolves_entities:
                 rebuild_attributes(con, set(eids), _fq(c))
             if state == "auto_minor":
                 con.execute(

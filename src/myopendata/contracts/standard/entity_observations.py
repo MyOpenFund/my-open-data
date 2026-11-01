@@ -32,4 +32,5 @@ ENTITY_OBSERVATIONS = Contract(
         "source_code",
     ),
     entity_column_pair=("subject_scheme", "subject_value"),
+    resolves_entities=True,
 )

@@ -7,13 +7,11 @@ import hashlib
 import duckdb
 import pyarrow as pa
 
-# Schemes trusted to identify an entity across sources. Tickers get reused, so they never merge
-# entities and never key the identifier links; they stay visible in entity_observations itself.
-# Configurable: pass resolving_schemes to the publisher.
-DEFAULT_RESOLVING_SCHEMES = ("cik", "lei", "isin", "figi", "cb_code", "national_id")
-# Schemes an entity holds at most one value of (an issuer has several ISINs/FIGIs, one CIK/LEI).
-# Two values in one group means bad data or a wrong merge: conflict, never a silent merge.
-DEFAULT_SINGLE_VALUED_SCHEMES = ("cik", "lei", "cb_code")
+from myopendata.config import DEFAULT_RESOLVING_SCHEMES, DEFAULT_SINGLE_VALUED_SCHEMES
+
+# Non-resolving schemes (tickers) never merge entities and never key the identifier links; they
+# stay visible in the identity dataset itself. Policy comes from StoreConfig.
+__all__ = ["DEFAULT_RESOLVING_SCHEMES", "DEFAULT_SINGLE_VALUED_SCHEMES"]
 
 
 class EntityConflict(ValueError):

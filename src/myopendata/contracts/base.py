@@ -33,6 +33,8 @@ class Contract:
         natural_key + known_at (a restatement = same key, later known_at).
     entity_column_pair: (scheme column, value column) the publisher resolves to entity_id,
         or None for datasets that are not about an entity.
+    resolves_entities: True for an identity dataset (shape of entity_observations): the publisher
+        builds identifier links and SCD2 attributes from it, and publishes it before other data.
     """
 
     name: str
@@ -46,6 +48,7 @@ class Contract:
     partition_by: tuple[str, ...] = ()
     doc: str = ""
     checks: tuple[str, ...] = field(default=())  # names of extra row checks, see rules.ROW_CHECKS
+    resolves_entities: bool = False
 
     @property
     def major(self) -> int:
@@ -79,6 +82,7 @@ class Contract:
             "natural_key": list(self.natural_key),
             "entity_column_pair": list(self.entity_column_pair or ()),
             "checks": list(self.checks),
+            "resolves_entities": self.resolves_entities,
         }
         raw = json.dumps(payload, sort_keys=True).encode()
         return hashlib.sha256(raw).hexdigest()

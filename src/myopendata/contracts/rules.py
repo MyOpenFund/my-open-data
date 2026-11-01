@@ -14,9 +14,11 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,62}$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 KINDS = ("fact", "derived")
 KNOWN_AT_KINDS = ("published", "collected")
-# Identifier schemes the publisher can resolve (common rule, spec §6.1). Extending it is a MINOR
-# change of the library.
+# Identifier schemes the publisher can resolve (common rule, spec §6.1). The standard contracts
+# list them as their `allowed` vocabulary, so extending this tuple changes their fingerprint:
+# it ships as a new MAJOR of those contracts, never in place.
 ID_SCHEMES = ("cik", "lei", "isin", "figi", "ticker", "cb_code", "national_id")
+IDENTITY_COLUMNS = ("subject_scheme", "subject_value", "id_scheme", "id_value", "name", "country")
 # Columns the publisher adds to every published row.
 RESERVED = ("entity_id", "batch_id")
 
@@ -81,6 +83,15 @@ def validate_contract(c: Contract) -> None:
         schemes = c.column(c.entity_column_pair[0]).allowed
         if not schemes or not set(schemes) <= set(ID_SCHEMES):
             raise ContractError(f"{c.name}: entity scheme column must allow only {ID_SCHEMES}")
+    if c.resolves_entities:
+        for k in IDENTITY_COLUMNS:
+            if k not in names:
+                raise ContractError(f"{c.name}: an identity dataset needs column {k}")
+        if c.entity_column_pair != ("subject_scheme", "subject_value"):
+            raise ContractError(f"{c.name}: identity datasets resolve on the subject columns")
+    for col in c.columns:
+        if pa.types.is_nested(col.type):
+            raise ContractError(f"{c.name}.{col.name}: nested types are not supported")
     for k in c.partition_by:
         if k not in names:
             raise ContractError(f"{c.name}: partition_by column {k} not declared")
