@@ -30,13 +30,15 @@ def connect(cfg: StoreConfig, *, read_only: bool) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect()
     con.execute("INSTALL ducklake")
     con.execute("LOAD ducklake")
-    opts = [f"DATA_PATH '{cfg.lake_data.as_posix()}/'"]
+    data_path = cfg.lake_data.as_posix().replace("'", "''")
+    opts = [f"DATA_PATH '{data_path}/'"]
     if read_only:
         opts.append("READ_ONLY")
     else:
         cfg.lake_data.mkdir(parents=True, exist_ok=True)
         opts.append(f"DATA_INLINING_ROW_LIMIT {int(cfg.data_inlining_row_limit)}")
-    con.execute(f"ATTACH 'ducklake:{cfg.catalog}' AS {LAKE} ({', '.join(opts)})")
+    catalog = cfg.catalog.replace("'", "''")
+    con.execute(f"ATTACH 'ducklake:{catalog}' AS {LAKE} ({', '.join(opts)})")
     if not read_only:
         for ddl in REF_DDL:
             con.execute(ddl)
