@@ -87,6 +87,10 @@ def _definition(c: Contract) -> dict:
         "checks": list(c.checks),
         "partition_by": list(c.partition_by),
         "licence": c.licence,
+        "resolves_entities": c.resolves_entities,
+        # documentation travels with the approval so readers can describe a dataset without the
+        # producer package installed; never compared (not part of the data definition)
+        "docs": {"dataset": c.doc, "columns": {col.name: col.doc for col in c.columns}},
     }
 
 
@@ -137,7 +141,7 @@ def approve_contract(
 
 def _additive(old: dict, new: dict) -> bool:
     """MINOR rule (D6): everything else equal, new columns appended and nullable."""
-    if any(old.get(k) != new.get(k) for k in new if k != "columns"):
+    if any(old.get(k) != new.get(k) for k in new if k not in ("columns", "docs")):
         return False
     n = len(old["columns"])
     return new["columns"][:n] == old["columns"] and all(c[2] for c in new["columns"][n:])

@@ -236,3 +236,45 @@ def test_xlsx_row_limit(tmp_path):
     big = pa.table({"x": pa.array(range(XLSX_MAX_ROWS + 1))})
     with pytest.raises(ValueError, match="Excel"):
         export(big, tmp_path / "big.xlsx")
+
+
+def test_structured_filters_columns_and_limit(store):
+    late = ts("2025-12-01T00:00:00")
+    t = store.read_asof(
+        "fundamentals",
+        late,
+        filters={"source_code": ["sec"]},
+        columns=["concept", "value", "source_code"],
+    )
+    assert t.column_names == ["concept", "value", "source_code"] and t.num_rows == 1
+    assert store.read_asof("fundamentals", late, filters={"source_code": "nope"}).num_rows == 0
+    assert store.read_asof("fundamentals", late, limit=1).num_rows == 1
+
+
+def test_filter_values_are_bound_not_interpolated(store):
+    t = store.read_asof("fundamentals", filters={"source_code": "sec' OR '1'='1"})
+    assert t.num_rows == 0
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"filters": {"nope": 1}},
+        {"columns": ["x; DROP"]},
+        {"filters": {"concept": []}},
+        {"limit": -1},
+        {"limit": True},
+    ],
+)
+def test_bad_filter_arguments(store, kw):
+    with pytest.raises(ValueError):
+        store.read_asof("fundamentals", **kw)
+
+
+def test_describe_carries_columns_docs_and_key(store):
+    d = store.describe("fundamentals")
+    cols = {c["name"]: c for c in d["columns"]}
+    assert d["licence"] and d["doc"].startswith("Reported")
+    assert cols["frequency"]["allowed"] == ["annual", "semiannual", "quarterly"]
+    assert "Normalised concept" in cols["concept"]["doc"]
+    assert d["natural_key"][-1] == "source_code"

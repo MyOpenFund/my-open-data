@@ -59,6 +59,12 @@ class _Dataset:
     kind: str
     licence: str
     natural_key: tuple[str, ...]
+    columns: tuple[dict, ...]
+    doc: str
+
+    @property
+    def column_names(self) -> tuple[str, ...]:
+        return ("entity_id",) + tuple(c["name"] for c in self.columns) + ("batch_id",)
 
     @property
     def table(self) -> str:
@@ -105,8 +111,26 @@ class Store:
             cur = out.get((name, major))
             if cur and _semver(cur.version) >= _semver(version):
                 continue
+            docs = d.get("docs", {})
+            cols = tuple(
+                {
+                    "name": n,
+                    "type": t,
+                    "nullable": nullable,
+                    "allowed": allowed or None,
+                    "doc": docs.get("columns", {}).get(n, ""),
+                }
+                for n, t, nullable, allowed in d["columns"]
+            )
             out[(name, major)] = _Dataset(
-                name, major, version, d["kind"], d.get("licence", ""), tuple(d["natural_key"])
+                name,
+                major,
+                version,
+                d["kind"],
+                d.get("licence", ""),
+                tuple(d["natural_key"]),
+                cols,
+                docs.get("dataset", ""),
             )
         return out
 
@@ -136,6 +160,21 @@ class Store:
                     }
                 )
         return out
+
+    def describe(self, dataset: str) -> dict:
+        """Everything a caller (or an MCP tool listing) needs to query a dataset correctly."""
+        d = self._dataset(dataset)
+        return {
+            "name": d.name,
+            "major": d.major,
+            "version": d.version,
+            "kind": d.kind,
+            "licence": d.licence,
+            "doc": d.doc,
+            "natural_key": list(d.natural_key),
+            "columns": [dict(c) for c in d.columns],
+            "added_by_publisher": ["entity_id", "batch_id"],
+        }
 
     def _dataset(self, dataset: str) -> _Dataset:
         reg = self._registered()
@@ -178,17 +217,44 @@ class Store:
         dataset: str,
         as_of: datetime | None = None,
         *,
+        filters: dict | None = None,
+        columns: list[str] | None = None,
+        limit: int | None = None,
         where: str | None = None,
         snapshot: int | None = None,
     ) -> pa.Table:
+        """Rows knowable at as_of. filters = {column: value or list of values}, bound as query
+        parameters (safe for untrusted input); columns = projection; limit = row cap.
+        where = free SQL for trusted callers only (one expression, never untrusted input)."""
         as_of = as_of or datetime.now(UTC)
+        d = self._dataset(dataset)
         sql = self.asof_sql(dataset, as_of, snapshot=snapshot)
+        known = set(d.column_names)
+        for col in list(filters or {}) + list(columns or []):
+            if col not in known:
+                raise ValueError(f"unknown column {col!r} for {d.table}")
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or limit < 0
+        ):
+            raise ValueError("limit must be a non-negative int")
+        clauses, params = [], []
+        for col, value in (filters or {}).items():
+            values = list(value) if isinstance(value, (list, tuple, set)) else [value]
+            if not values:
+                raise ValueError(f"empty filter list for {col!r}")
+            clauses.append(f"{col} IN ({', '.join('?' * len(values))})")
+            params += values
         con = self.con.cursor()
         try:
             if where:
                 self._one_statement(con, f"SELECT 1 WHERE {where}")
-                sql = f"SELECT * FROM ({sql}) WHERE {where}"
-            t = con.sql(sql).to_arrow_table()
+                clauses.append(f"({where})")
+            sql = f"SELECT {', '.join(columns) if columns else '*'} FROM ({sql})"
+            if clauses:
+                sql += " WHERE " + " AND ".join(clauses)
+            if limit is not None:
+                sql += f" LIMIT {limit}"
+            t = con.sql(sql, params=params or None).to_arrow_table()
         finally:
             con.close()
         return _stamp(t, as_of, snapshot)
