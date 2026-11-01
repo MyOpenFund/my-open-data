@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "my-open-data"
+version = "0.1.0"
+description = "Bitemporal open-data store for MyOpenFund: contracts, writer, publisher, reader."
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["pyarrow>=17"]
+
+[project.optional-dependencies]
+writer = []
+publisher = ["duckdb>=2.0,<3", "pytz>=2024.1"]
+reader = ["duckdb>=2.0,<3", "pytz>=2024.1", "openpyxl>=3.1"]
+dev = ["duckdb>=2.0,<3", "pytz>=2024.1", "openpyxl>=3.1", "pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+myopendata = "myopendata.cli:main"
+
+[project.entry-points."myopendata.contracts"]
+standard = "myopendata.contracts.standard:contracts"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/myopendata"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["postgres: needs MYOPENDATA_TEST_PG (a libpq DSN) for a Postgres DuckLake catalogue"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "BLE"]
