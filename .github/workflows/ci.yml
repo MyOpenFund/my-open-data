@@ -13,12 +13,12 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_PASSWORD: ci-only
+          POSTGRES_HOST_AUTH_METHOD: trust  # throwaway CI container, no password needed
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      MYOPENDATA_TEST_PG: "host=localhost port=5432 user=postgres password=ci-only dbname=postgres"
+      MYOPENDATA_TEST_PG: "host=localhost port=5432 user=postgres dbname=postgres"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
