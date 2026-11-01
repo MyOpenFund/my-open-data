@@ -130,3 +130,109 @@ def test_entity_master_joins(store):
         "USING (entity_id) WHERE a.valid_to IS NULL LIMIT 1"
     ).fetchall()
     assert t == [("MICROSOFT CORP",)]
+
+
+def test_same_known_at_resolved_by_publication_order(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2))])
+    assert publish_pending(approved, now=NOW).exit_code == 0
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(1))], run_id="r2")  # correction
+    assert publish_pending(approved, now=NOW).exit_code == 0
+    with Store.open(approved) as s:
+        assert _sec_value(s.read_asof("fundamentals")) == [Decimal(1)]
+
+
+def test_known_at_equal_to_as_of_is_known_and_offsets_are_honoured(store):
+    assert store.read_asof("fundamentals", ts("2025-07-30T20:00:00")).num_rows == 1
+    assert store.read_asof("fundamentals", ts("2025-07-30T21:59:59+02:00")).num_rows == 0
+    assert store.read_asof("fundamentals", ts("2025-07-30T22:00:00+02:00")).num_rows == 1
+
+
+def test_where_cannot_run_a_second_statement(store):
+    with pytest.raises(ValueError, match="one SQL statement"):
+        store.read_asof("fundamentals", where="1=1; SELECT 42")
+
+
+def test_session_cannot_touch_host_files(store, tmp_path):
+    import duckdb
+
+    target = tmp_path / "leak.csv"
+    with pytest.raises(duckdb.Error):
+        store.con.sql(f"COPY (SELECT 42) TO '{target}'").fetchall()
+    with pytest.raises(duckdb.Error):
+        store.read_asof("fundamentals", where="EXISTS (SELECT * FROM read_csv('/etc/passwd'))")
+    with pytest.raises(duckdb.Error):
+        store.con.execute("SET enable_external_access = true")
+    assert not target.exists()
+
+
+def test_temp_views_do_not_leak_between_assemble_calls(store):
+    store.assemble(Recipe("a", "1.0.0", {"f": "fundamentals"}, "SELECT count(*) FROM f"))
+    import duckdb
+
+    with pytest.raises(duckdb.Error):
+        store.assemble(Recipe("b", "1.0.0", {}, "SELECT count(*) FROM f"))
+
+
+@pytest.mark.parametrize("bad", ["lake", "memory", "x;y", "1f"])
+def test_recipe_input_names_are_checked(store, bad):
+    with pytest.raises(ValueError, match="input name"):
+        store.assemble(Recipe("a", "1.0.0", {bad: "fundamentals"}, "SELECT 1"))
+
+
+def test_recipe_with_two_inputs(store):
+    r = Recipe(
+        "named",
+        "1.0.0",
+        {"f": "fundamentals", "e": "entity_observations"},
+        "SELECT DISTINCT e.name FROM f JOIN e USING (entity_id)",
+    )
+    t = store.assemble(r, ts("2025-12-01T00:00:00"))
+    assert t.to_pylist() == [{"name": "MICROSOFT CORP"}]
+    assert t.schema.metadata[b"myopendata.recipe"] == b"named@1.0.0"
+
+
+@pytest.mark.parametrize("name", ["nope", "fundamentals_v9"])
+def test_unknown_dataset_or_major(store, name):
+    from myopendata.reader.api import UnknownDataset
+
+    with pytest.raises(UnknownDataset):
+        store.read_asof(name)
+
+
+def test_bool_snapshot_rejected(store):
+    with pytest.raises(ValueError, match="snapshot"):
+        store.read_asof("fundamentals", snapshot=True)
+
+
+def test_result_records_its_as_of(store):
+    t = store.read_asof("fundamentals", ts("2025-12-01T00:00:00"))
+    assert t.schema.metadata[b"myopendata.as_of"] == b"2025-12-01T00:00:00+00:00"
+
+
+def test_datasets_carry_name_version_and_licence(store):
+    d = {x["name"]: x for x in store.datasets()}
+    assert d["fundamentals"]["version"] == "1.0.0" and d["fundamentals"]["licence"]
+    assert d["fundamentals"]["table"] == "fundamentals_v1"
+
+
+def test_xlsx_export_writes_utc_timestamps_and_numbers(store, tmp_path):
+    from openpyxl import load_workbook
+
+    t = store.read_asof("fundamentals", ts("2025-09-01T00:00:00"), where="source_code = 'sec'")
+    p = export(t, tmp_path / "out.xlsx")
+    ws = load_workbook(p).active
+    header = [c.value for c in ws[1]]
+    row = [c.value for c in ws[2]]
+    assert row[header.index("known_at")].isoformat() == "2025-07-30T20:00:00"
+    assert float(row[header.index("value")]) == 40152000000
+
+
+def test_xlsx_row_limit(tmp_path):
+    import pyarrow as pa
+
+    from myopendata.reader.api import XLSX_MAX_ROWS
+
+    big = pa.table({"x": pa.array(range(XLSX_MAX_ROWS + 1))})
+    with pytest.raises(ValueError, match="Excel"):
+        export(big, tmp_path / "big.xlsx")
