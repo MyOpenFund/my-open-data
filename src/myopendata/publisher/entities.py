@@ -89,6 +89,7 @@ def resolve_observations(
             raise EntityConflict(f"identifiers {members} map to entities {sorted(known)}")
         eid = known.pop() if known else new_entity_id(*members[0])
         held = held_by.get(eid, set()) | set(members)
+        held_by[eid] = held  # later groups of this batch see what this one attached
         for scheme in single_valued_schemes:
             values = sorted(v for sch, v in held if sch == scheme)
             if len(values) > 1:

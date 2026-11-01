@@ -198,3 +198,19 @@ def test_default_clock_is_used_when_now_is_omitted(tmp_path):
         producer="t",
     )
     assert json.loads((ref.path / "batch.json").read_text())["written_at"]
+
+
+def test_epoch_integers_for_known_at_are_refused(tmp_path):
+    t = table(FUNDAMENTALS, [fund_row()])
+    i = t.schema.get_field_index("known_at")
+    t = t.set_column(i, "known_at", pa.array([1_753_905_600], pa.int64()))  # epoch seconds
+    with pytest.raises(BatchInvalid, match="wrong_type:known_at"):
+        write_batch(FUNDAMENTALS, t, landing_root=tmp_path, run_id="r", producer="t", now=NOW)
+
+
+def test_string_valid_date_is_refused(tmp_path):
+    t = table(FUNDAMENTALS, [fund_row()])
+    i = t.schema.get_field_index("valid_date")
+    t = t.set_column(i, "valid_date", pa.array(["2025-06-30"]))
+    with pytest.raises(BatchInvalid, match="wrong_type:valid_date"):
+        write_batch(FUNDAMENTALS, t, landing_root=tmp_path, run_id="r", producer="t", now=NOW)

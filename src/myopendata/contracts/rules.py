@@ -151,8 +151,12 @@ def conform(
     if table.num_rows == 0:
         raise BatchInvalid(["empty_batch"])
     kt = table.schema.field("known_at").type
-    if pa.types.is_timestamp(kt) and kt.tz is None:
+    if not pa.types.is_timestamp(kt):
+        raise BatchInvalid(["wrong_type:known_at"])  # e.g. epoch integers: never guess the unit
+    if kt.tz is None:
         raise BatchInvalid(["known_at_without_timezone"])
+    if not pa.types.is_date(table.schema.field("valid_date").type):
+        raise BatchInvalid(["wrong_type:valid_date"])
     for col in contract.columns:
         n = table[col.name].null_count
         if not col.nullable and n:

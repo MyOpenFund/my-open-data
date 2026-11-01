@@ -423,3 +423,41 @@ def test_approve_records_fingerprint(cfg):
     assert q(cfg, "SELECT fingerprint, approved_by FROM lake.ref.contracts") == [
         (FUNDAMENTALS.fingerprint(), "marc")
     ]
+
+
+def test_two_subjects_cannot_attach_two_leis_to_one_entity():
+    from myopendata.publisher.entities import (
+        DEFAULT_RESOLVING_SCHEMES,
+        EntityConflict,
+        resolve_observations,
+    )
+
+    links = {("cik", "1"): "ent_e", ("isin", "X"): "ent_e"}
+    rows = [
+        obs_rows(subject_value="1", id_scheme="lei", id_value="LEI_ONE"),
+        obs_rows(subject_scheme="isin", subject_value="X", id_scheme="lei", id_value="LEI_TWO"),
+    ]
+    import pytest
+
+    with pytest.raises(EntityConflict, match="lei"):
+        resolve_observations(table(ENTITY_OBSERVATIONS, rows), links, DEFAULT_RESOLVING_SCHEMES)
+
+
+def test_conflicting_approval_is_refused_and_reapproval_is_a_noop(approved):
+    import pytest
+
+    from myopendata.publisher import ApprovalRefused
+
+    assert approve_contract(approved, FUNDAMENTALS, "x") == "already_approved"
+    floaty = dataclasses.replace(
+        FUNDAMENTALS,
+        columns=tuple(
+            Column("value", pa.float64(), nullable=False) if c.name == "value" else c
+            for c in FUNDAMENTALS.columns
+        ),
+    )
+    with pytest.raises(ApprovalRefused):
+        approve_contract(approved, floaty, "x")
+    assert q(approved, "SELECT count(*) FROM lake.ref.contracts WHERE name = 'fundamentals'") == [
+        (1,)
+    ]

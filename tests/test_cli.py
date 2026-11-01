@@ -34,10 +34,15 @@ def test_approve_unknown_contract(cfg, monkeypatch):
     assert main(["contracts", "approve", "nope", "1", "--by", "marc"]) == 1
 
 
-def test_missing_env_is_an_error(monkeypatch):
+def test_missing_env_is_a_clean_error(monkeypatch, capsys):
     monkeypatch.delenv("MYOPENDATA_DATA_ROOT", raising=False)
     monkeypatch.delenv("MYOPENDATA_CATALOG", raising=False)
-    import pytest
+    assert main(["publish"]) == 1
+    assert "MYOPENDATA_DATA_ROOT" in capsys.readouterr().err
 
-    with pytest.raises(RuntimeError, match="MYOPENDATA_DATA_ROOT"):
-        main(["publish"])
+
+def test_reapproval_is_reported_as_noop(cfg, monkeypatch, capsys):
+    _env(monkeypatch, cfg)
+    assert main(["contracts", "approve", "fundamentals", "1", "--by", "x"]) == 0
+    assert main(["contracts", "approve", "fundamentals", "1", "--by", "x"]) == 0
+    assert "already_approved" in capsys.readouterr().out

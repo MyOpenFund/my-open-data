@@ -97,11 +97,30 @@ def _semver(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in v.split("."))
 
 
-def approve_contract(cfg: StoreConfig, contract: Contract, approved_by: str) -> None:
-    """Marc's reviewed step (spec §6.1): register a contract version as publishable."""
+class ApprovalRefused(ValueError):
+    pass
+
+
+def approve_contract(
+    cfg: StoreConfig, contract: Contract, approved_by: str, *, force: bool = False
+) -> str:
+    """The reviewed step (spec §6.1): register a contract version as publishable.
+
+    Returns "approved" (new row) or "already_approved" (no-op). A definition that is neither
+    approved nor an additive MINOR of the approved one is refused unless force=True: a major's
+    table already holds rows of the approved shape.
+    """
     validate_contract(contract)
     con = connect(cfg, read_only=False)
     try:
+        state = _approval_state(con, contract)
+        if state == "approved":
+            return "already_approved"
+        if state == "fingerprint_mismatch" and not force:
+            raise ApprovalRefused(
+                f"{contract.table_name} {contract.version} is not an additive change of the "
+                "approved definition; publish it as a new major (or force)"
+            )
         con.execute(
             "INSERT INTO lake.ref.contracts VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
@@ -114,6 +133,7 @@ def approve_contract(cfg: StoreConfig, contract: Contract, approved_by: str) -> 
                 datetime.now(UTC),
             ],
         )
+        return "approved"
     finally:
         con.close()
 

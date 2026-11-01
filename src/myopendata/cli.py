@@ -19,6 +19,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("name")
     ap.add_argument("major", type=int)
     ap.add_argument("--by", required=True)
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="approve a non-additive change within a major (rarely right)",
+    )
     sub.add_parser("publish")
     a = p.parse_args(argv)
 
@@ -26,7 +31,11 @@ def main(argv: list[str] | None = None) -> int:
         for (name, major), ct in sorted(discover_contracts().items()):
             print(f"{name}_v{major}\t{ct.version}\t{ct.owner}\t{ct.fingerprint()[:12]}")
         return 0
-    cfg = StoreConfig.from_env()
+    try:
+        cfg = StoreConfig.from_env()
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     if a.cmd == "contracts" and a.action == "approve":
         from myopendata.publisher import approve_contract
 
@@ -34,8 +43,14 @@ def main(argv: list[str] | None = None) -> int:
         if ct is None:
             print(f"error: unknown contract {a.name}_v{a.major}", file=sys.stderr)
             return 1
-        approve_contract(cfg, ct, a.by)
-        print(f"approved {a.name}_v{a.major} {ct.version} {ct.fingerprint()[:12]}")
+        from myopendata.publisher import ApprovalRefused
+
+        try:
+            state = approve_contract(cfg, ct, a.by, force=a.force)
+        except ApprovalRefused as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"{state} {a.name}_v{a.major} {ct.version} {ct.fingerprint()[:12]}")
         return 0
     from myopendata.publisher import publish_pending
 

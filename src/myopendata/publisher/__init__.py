@@ -1,3 +1,8 @@
-from myopendata.publisher.publish import PublishReport, approve_contract, publish_pending
+from myopendata.publisher.publish import (
+    ApprovalRefused,
+    PublishReport,
+    approve_contract,
+    publish_pending,
+)
 
-__all__ = ["PublishReport", "approve_contract", "publish_pending"]
+__all__ = ["ApprovalRefused", "PublishReport", "approve_contract", "publish_pending"]
