@@ -1,0 +1,150 @@
+"""Common rules every contract must satisfy, and the row checks shared by writer and publisher."""
+
+from __future__ import annotations
+
+import re
+from datetime import UTC, datetime, timedelta
+
+import pyarrow as pa
+import pyarrow.compute as pc
+
+from myopendata.contracts.base import Contract, ContractError
+
+NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,62}$")
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+KINDS = ("fact", "derived")
+KNOWN_AT_KINDS = ("published", "collected")
+
+# Columns every fact contract carries, with their required arrow types.
+BITEMPORAL = {
+    "valid_date": pa.date32(),
+    "known_at": pa.timestamp("us", tz="UTC"),
+    "known_at_kind": pa.string(),
+    "source_code": pa.string(),
+}
+PROVENANCE_OPTIONAL = {"source_doc_id": pa.string()}
+
+
+def validate_contract(c: Contract) -> None:
+    """Raise ContractError if the contract breaks a common rule."""
+    if not NAME_RE.match(c.name):
+        raise ContractError(f"{c.name}: name must match {NAME_RE.pattern}")
+    if not SEMVER_RE.match(c.version):
+        raise ContractError(f"{c.name}: version must be MAJOR.MINOR.PATCH, got {c.version!r}")
+    if c.kind not in KINDS:
+        raise ContractError(f"{c.name}: kind must be one of {KINDS}")
+    if not c.licence.strip():
+        raise ContractError(f"{c.name}: licence is mandatory")
+    if not c.owner.strip():
+        raise ContractError(f"{c.name}: owner is mandatory")
+    names = [col.name for col in c.columns]
+    if len(names) != len(set(names)):
+        raise ContractError(f"{c.name}: duplicate column names")
+    for col in c.columns:
+        if not NAME_RE.match(col.name):
+            raise ContractError(f"{c.name}.{col.name}: bad column name")
+        if col.name == "entity_id":
+            raise ContractError(f"{c.name}: entity_id is assigned by the publisher, not declared")
+    for req, typ in {**BITEMPORAL, **PROVENANCE_OPTIONAL}.items():
+        if req not in names:
+            raise ContractError(f"{c.name}: missing common column {req}")
+        col = c.column(req)
+        if col.type != typ:
+            raise ContractError(f"{c.name}.{req}: must be {typ}, got {col.type}")
+        if req in BITEMPORAL and col.nullable:
+            raise ContractError(f"{c.name}.{req}: must be non-nullable")
+    if tuple(c.column("known_at_kind").allowed or ()) != KNOWN_AT_KINDS:
+        raise ContractError(f"{c.name}.known_at_kind: allowed must be {KNOWN_AT_KINDS}")
+    if "known_at" in c.natural_key:
+        raise ContractError(f"{c.name}: known_at must not be in natural_key (it versions the key)")
+    for k in ("valid_date", "source_code"):
+        if k not in c.natural_key:
+            raise ContractError(f"{c.name}: natural_key must include {k}")
+    for k in c.natural_key:
+        if k not in names:
+            raise ContractError(f"{c.name}: natural_key column {k} not declared")
+        if c.column(k).nullable:
+            raise ContractError(f"{c.name}: natural_key column {k} must be non-nullable")
+    if c.entity_column_pair:
+        for k in c.entity_column_pair:
+            if k not in names or c.column(k).nullable:
+                raise ContractError(f"{c.name}: entity column {k} must be declared non-nullable")
+    for chk in c.checks:
+        if chk not in ROW_CHECKS:
+            raise ContractError(f"{c.name}: unknown check {chk}")
+
+
+class BatchInvalid(ValueError):
+    """A batch breaks its contract. reasons: list of short machine-readable strings."""
+
+    def __init__(self, reasons: list[str]):
+        super().__init__("; ".join(reasons))
+        self.reasons = reasons
+
+
+def _check_ocr_confidence(t: pa.Table) -> list[str]:
+    is_ocr = pc.equal(t["extraction_method"], "ocr")
+    conf = t["confidence"]
+    bad = pc.and_kleene(
+        is_ocr, pc.or_kleene(pc.is_null(conf), pc.or_kleene(pc.less(conf, 0), pc.greater(conf, 1)))
+    )
+    n = pc.sum(pc.cast(pc.fill_null(bad, False), pa.int64())).as_py() or 0
+    return [f"ocr_confidence_missing_or_out_of_range:{n}"] if n else []
+
+
+ROW_CHECKS = {"ocr_confidence": _check_ocr_confidence}
+
+
+def conform(
+    contract: Contract,
+    table: pa.Table,
+    *,
+    now: datetime | None = None,
+    future_tolerance_s: int = 300,
+) -> pa.Table:
+    """Cast table to the contract schema and run every row check. Raises BatchInvalid."""
+    reasons: list[str] = []
+    expected = [c.name for c in contract.columns]
+    extra = sorted(set(table.column_names) - set(expected))
+    missing = sorted(set(expected) - set(table.column_names))
+    if extra:
+        reasons.append(f"unknown_columns:{','.join(extra)}")
+    if missing:
+        reasons.append(f"missing_columns:{','.join(missing)}")
+    if reasons:
+        raise BatchInvalid(reasons)
+    if table.num_rows == 0:
+        raise BatchInvalid(["empty_batch"])
+    kt = table.schema.field("known_at").type
+    if pa.types.is_timestamp(kt) and kt.tz is None:
+        raise BatchInvalid(["known_at_without_timezone"])
+    try:
+        table = table.select(expected).cast(contract.schema, safe=True)
+    except (pa.ArrowInvalid, pa.ArrowNotImplementedError) as exc:
+        raise BatchInvalid([f"type_cast_failed:{exc}"]) from exc
+    for col in contract.columns:
+        arr = table[col.name]
+        if not col.nullable and arr.null_count:
+            reasons.append(f"nulls_in_required:{col.name}:{arr.null_count}")
+        if col.allowed is not None:
+            ok = pc.is_in(arr, value_set=pa.array(col.allowed, type=pa.string()))
+            n = pc.sum(pc.cast(pc.invert(pc.fill_null(ok, True)), pa.int64())).as_py() or 0
+            if n:
+                reasons.append(f"value_not_allowed:{col.name}:{n}")
+    now = now or datetime.now(UTC)
+    limit = pa.scalar(
+        now + timedelta(seconds=future_tolerance_s), type=pa.timestamp("us", tz="UTC")
+    )
+    n_future = pc.sum(pc.cast(pc.greater(table["known_at"], limit), pa.int64())).as_py() or 0
+    if n_future:
+        reasons.append(f"known_at_in_future:{n_future}")
+    key = list(contract.natural_key) + ["known_at"]
+    dup = table.group_by(key).aggregate([([], "count_all")])
+    n_dup = pc.sum(pc.cast(pc.greater(dup["count_all"], 1), pa.int64())).as_py() or 0
+    if n_dup:
+        reasons.append(f"duplicate_natural_key:{n_dup}")
+    for chk in contract.checks:
+        reasons.extend(ROW_CHECKS[chk](table))
+    if reasons:
+        raise BatchInvalid(reasons)
+    return table
