@@ -219,8 +219,16 @@ def _read_manifest(path: Path) -> dict | None:
         return None
     if not isinstance(m, dict) or any(k not in m for k in MANIFEST_KEYS):
         return None
-    strings = ("batch_id", "contract", "contract_version", "contract_fingerprint", "producer",
-               "run_id", "content_sha256", "written_at")
+    strings = (
+        "batch_id",
+        "contract",
+        "contract_version",
+        "contract_fingerprint",
+        "producer",
+        "run_id",
+        "content_sha256",
+        "written_at",
+    )
     if any(not isinstance(m[k], str) for k in strings) or not isinstance(m["files"], dict):
         return None
     if isinstance(m["rows"], bool) or not isinstance(m["rows"], int):
