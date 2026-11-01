@@ -30,8 +30,8 @@ pip install "my-open-data[reader]"     # analyses, MCP, strategies
 from datetime import datetime, timezone
 from myopendata.reader import Recipe, Store, export
 
-store = Store.open()                                   # config from env
-store.datasets()                                       # published tables
+store = Store.open()                                   # config from env (or `with Store.open() as store:`)
+store.datasets()                                       # name, major, version, kind, licence, table
 t = store.read_asof("fundamentals", datetime(2025, 12, 1, tzinfo=timezone.utc),
                     where="concept = 'LongTermDebt'")  # pyarrow.Table, latest known per key
 t0 = store.read_asof("fundamentals", snapshot=42)      # what the store held at DuckLake version 42
@@ -62,9 +62,10 @@ myopendata contracts approve fundamentals 1 --by <name>   # reviewed step, once 
 myopendata publish                                          # exit 0 ok · 1 fatal · 3 degraded
 ```
 
-`publish` audits every landed batch again, quarantines failures in `landing/_quarantine/` with a
-`reason.json`, publishes the rest atomically (one DuckLake snapshot per batch, commit message =
-batch id) and writes a run report under `reports/publisher/`.
+`publish` audits every landed batch again (file checksum, contract, recomputed batch id),
+quarantines failures in `landing/_quarantine/` with a `reason.json`, publishes the rest atomically
+(one DuckLake snapshot per batch, commit message = batch id) and writes a run report under
+`reports/publisher/`. Design, security model and gotchas: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Licence
 
