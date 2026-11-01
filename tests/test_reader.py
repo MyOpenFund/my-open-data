@@ -22,6 +22,7 @@ def store(approved):
                 source_code="ocr-test",
                 extraction_method="ocr",
                 confidence=0.8,
+                source_page=12,
                 value=Decimal(40100000000),
                 known_at=ts("2025-08-15T00:00:00"),
             ),

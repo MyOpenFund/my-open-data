@@ -48,13 +48,51 @@ def test_restatement_is_not_a_duplicate(tmp_path):
 def test_two_sources_same_fact_is_not_a_duplicate(tmp_path):
     _write(
         tmp_path,
-        [fund_row(), fund_row(source_code="ocr-test", extraction_method="ocr", confidence=0.9)],
+        [
+            fund_row(),
+            fund_row(
+                source_code="ocr-test", extraction_method="ocr", confidence=0.9, source_page=12
+            ),
+        ],
     )
 
 
-def test_ocr_without_confidence_rejected(tmp_path):
-    with pytest.raises(BatchInvalid, match="ocr_confidence"):
-        _write(tmp_path, [fund_row(extraction_method="ocr", source_code="ocr-test")])
+def test_ocr_without_lineage_rejected(tmp_path):
+    with pytest.raises(BatchInvalid) as e:
+        _write(
+            tmp_path,
+            [fund_row(extraction_method="ocr", source_code="ocr-test", source_doc_id=None)],
+        )
+    assert set(e.value.reasons) == {
+        "ocr_lineage_missing:confidence:1",
+        "ocr_lineage_missing:source_doc_id:1",
+        "ocr_lineage_missing:source_page:1",
+    }
+
+
+def test_confidence_out_of_range_rejected_on_any_row(tmp_path):
+    with pytest.raises(BatchInvalid, match="confidence_out_of_range:1"):
+        _write(tmp_path, [fund_row(confidence=7.0)])
+
+
+def test_null_in_natural_key_is_batch_invalid_not_a_crash(tmp_path):
+    with pytest.raises(BatchInvalid, match="nulls_in_required:source_code:1"):
+        _write(tmp_path, [fund_row(source_code=None)])
+
+
+def test_float_for_decimal_rejected(tmp_path):
+    t = table(FUNDAMENTALS, [fund_row()])
+    i = t.schema.get_field_index("value")
+    t = t.set_column(i, "value", pa.array([1e30]))
+    with pytest.raises(BatchInvalid, match="float_for_decimal:value"):
+        write_batch(FUNDAMENTALS, t, landing_root=tmp_path, run_id="r", producer="t", now=NOW)
+
+
+def test_duplicate_input_columns_rejected(tmp_path):
+    t = table(FUNDAMENTALS, [fund_row()])
+    t = t.append_column("unit", t["unit"])
+    with pytest.raises(BatchInvalid, match="duplicate_columns"):
+        write_batch(FUNDAMENTALS, t, landing_root=tmp_path, run_id="r", producer="t", now=NOW)
 
 
 def test_known_at_in_future_rejected(tmp_path):

@@ -26,5 +26,10 @@ def discover_contracts(extra: list[Contract] | None = None) -> dict[tuple[str, i
         key = (c.name, c.major)
         if key in out and out[key].fingerprint() != c.fingerprint():
             raise ContractError(f"{c.name} v{c.major} declared twice with different definitions")
-        out[key] = c
+        if key not in out or _semver(c.version) > _semver(out[key].version):
+            out[key] = c  # same definition, several patch versions: keep the highest
     return out
+
+
+def _semver(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in v.split("."))

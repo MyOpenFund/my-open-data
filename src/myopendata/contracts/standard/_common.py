@@ -1,10 +1,9 @@
 import pyarrow as pa
 
 from myopendata.contracts.base import Column
-from myopendata.contracts.rules import KNOWN_AT_KINDS
+from myopendata.contracts.rules import ID_SCHEMES, KNOWN_AT_KINDS
 
-# Identifier schemes the publisher can resolve. Extending it is a MINOR change of the library.
-ID_SCHEMES = ("cik", "lei", "isin", "figi", "ticker", "cb_code", "national_id")
+__all__ = ["BITEMPORAL_COLUMNS", "ID_SCHEMES"]
 
 BITEMPORAL_COLUMNS = (
     Column(

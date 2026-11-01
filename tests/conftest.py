@@ -13,7 +13,9 @@ NOW = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
 
 
 def ts(s: str) -> datetime:
-    return datetime.fromisoformat(s).replace(tzinfo=UTC)
+    """Naive ISO string read as UTC; a string with an offset keeps it."""
+    d = datetime.fromisoformat(s)
+    return d if d.tzinfo else d.replace(tzinfo=UTC)
 
 
 @pytest.fixture
@@ -33,8 +35,12 @@ def pg_cfg(tmp_path):
     con.execute("INSTALL postgres; LOAD postgres")
     con.execute(f"ATTACH '{dsn}' AS pg (TYPE postgres)")
     con.execute(f"CALL postgres_execute('pg', 'CREATE DATABASE {db}', use_transaction=false)")
+    yield StoreConfig(data_root=tmp_path / "store", catalog=f"postgres:{dsn} dbname={db}")
+    con.execute(
+        f"CALL postgres_execute('pg', 'DROP DATABASE IF EXISTS {db} WITH (FORCE)', "
+        "use_transaction=false)"
+    )
     con.close()
-    return StoreConfig(data_root=tmp_path / "store", catalog=f"postgres:{dsn} dbname={db}")
 
 
 @pytest.fixture

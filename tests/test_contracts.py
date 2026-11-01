@@ -82,3 +82,65 @@ def test_duplicate_definitions_of_one_version_are_rejected():
     )
     with pytest.raises(ContractError, match="declared twice"):
         discover_contracts([clash])
+
+
+def _bad(**kw):
+    return dataclasses.replace(FUNDAMENTALS, **kw)
+
+
+@pytest.mark.parametrize(
+    "contract, match",
+    [
+        (_bad(name="Fundamentals"), "name"),
+        (_bad(name="fundamentals\n"), "name"),
+        (_bad(version="1.0"), "version"),
+        (_bad(version="1.0.0\n"), "version"),
+        (_bad(kind="view"), "kind"),
+        (_bad(owner=""), "owner"),
+        (_bad(natural_key=FUNDAMENTALS.natural_key + ("concept",)), "duplicate natural_key"),
+        (_bad(natural_key=FUNDAMENTALS.natural_key + ("confidence",)), "non-nullable"),
+        (_bad(partition_by=("nope",)), "partition_by"),
+        (_bad(checks=("nope",)), "unknown check"),
+        (_bad(columns=FUNDAMENTALS.columns + (Column("batch_id", pa.string()),)), "batch_id"),
+        (
+            _bad(columns=FUNDAMENTALS.columns + (Column("nn", pa.int32(), allowed=("1",)),)),
+            "allowed",
+        ),
+    ],
+)
+def test_bad_contracts_are_rejected(contract, match):
+    with pytest.raises(ContractError, match=match):
+        validate_contract(contract)
+
+
+def test_check_without_its_columns_is_rejected():
+    c = _without(FUNDAMENTALS, "source_page")
+    with pytest.raises(ContractError, match="needs column source_page"):
+        validate_contract(c)
+
+
+def test_entity_scheme_outside_common_schemes_is_rejected():
+    cols = tuple(
+        Column("entity_scheme", pa.string(), nullable=False, allowed=("my_scheme",))
+        if c.name == "entity_scheme"
+        else c
+        for c in FUNDAMENTALS.columns
+    )
+    with pytest.raises(ContractError, match="entity scheme"):
+        validate_contract(_bad(columns=cols))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"licence": "CC-BY-4.0"},
+        {"partition_by": ()},
+    ],
+)
+def test_fingerprint_covers_terms_and_layout(change):
+    assert _bad(**change).fingerprint() != FUNDAMENTALS.fingerprint()
+
+
+def test_same_definition_several_patches_keeps_highest():
+    found = discover_contracts([_bad(version="1.0.7")])
+    assert found[("fundamentals", 1)].version == "1.0.7"

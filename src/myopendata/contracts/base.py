@@ -66,8 +66,10 @@ class Contract:
         raise KeyError(name)
 
     def fingerprint(self) -> str:
-        """Stable hash of everything that defines the data (not doc strings)."""
+        """Stable hash of everything that defines the data or its terms (not doc strings)."""
         payload = {
+            "licence": self.licence,
+            "partition_by": list(self.partition_by),
             "name": self.name,
             "major": self.major,
             "kind": self.kind,

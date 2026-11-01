@@ -14,6 +14,11 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,62}$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 KINDS = ("fact", "derived")
 KNOWN_AT_KINDS = ("published", "collected")
+# Identifier schemes the publisher can resolve (common rule, spec §6.1). Extending it is a MINOR
+# change of the library.
+ID_SCHEMES = ("cik", "lei", "isin", "figi", "ticker", "cb_code", "national_id")
+# Columns the publisher adds to every published row.
+RESERVED = ("entity_id", "batch_id")
 
 # Columns every fact contract carries, with their required arrow types.
 BITEMPORAL = {
@@ -27,9 +32,9 @@ PROVENANCE_OPTIONAL = {"source_doc_id": pa.string()}
 
 def validate_contract(c: Contract) -> None:
     """Raise ContractError if the contract breaks a common rule."""
-    if not NAME_RE.match(c.name):
+    if not NAME_RE.fullmatch(c.name):
         raise ContractError(f"{c.name}: name must match {NAME_RE.pattern}")
-    if not SEMVER_RE.match(c.version):
+    if not SEMVER_RE.fullmatch(c.version):
         raise ContractError(f"{c.name}: version must be MAJOR.MINOR.PATCH, got {c.version!r}")
     if c.kind not in KINDS:
         raise ContractError(f"{c.name}: kind must be one of {KINDS}")
@@ -41,10 +46,12 @@ def validate_contract(c: Contract) -> None:
     if len(names) != len(set(names)):
         raise ContractError(f"{c.name}: duplicate column names")
     for col in c.columns:
-        if not NAME_RE.match(col.name):
+        if not NAME_RE.fullmatch(col.name):
             raise ContractError(f"{c.name}.{col.name}: bad column name")
-        if col.name == "entity_id":
-            raise ContractError(f"{c.name}: entity_id is assigned by the publisher, not declared")
+        if col.name in RESERVED:
+            raise ContractError(f"{c.name}: {col.name} is assigned by the publisher, not declared")
+        if col.allowed is not None and (col.type != pa.string() or not col.allowed):
+            raise ContractError(f"{c.name}.{col.name}: allowed needs a non-empty string column")
     for req, typ in {**BITEMPORAL, **PROVENANCE_OPTIONAL}.items():
         if req not in names:
             raise ContractError(f"{c.name}: missing common column {req}")
@@ -53,13 +60,15 @@ def validate_contract(c: Contract) -> None:
             raise ContractError(f"{c.name}.{req}: must be {typ}, got {col.type}")
         if req in BITEMPORAL and col.nullable:
             raise ContractError(f"{c.name}.{req}: must be non-nullable")
-    if tuple(c.column("known_at_kind").allowed or ()) != KNOWN_AT_KINDS:
+    if set(c.column("known_at_kind").allowed or ()) != set(KNOWN_AT_KINDS):
         raise ContractError(f"{c.name}.known_at_kind: allowed must be {KNOWN_AT_KINDS}")
     if "known_at" in c.natural_key:
         raise ContractError(f"{c.name}: known_at must not be in natural_key (it versions the key)")
     for k in ("valid_date", "source_code"):
         if k not in c.natural_key:
             raise ContractError(f"{c.name}: natural_key must include {k}")
+    if len(set(c.natural_key)) != len(c.natural_key):
+        raise ContractError(f"{c.name}: duplicate natural_key columns")
     for k in c.natural_key:
         if k not in names:
             raise ContractError(f"{c.name}: natural_key column {k} not declared")
@@ -69,9 +78,18 @@ def validate_contract(c: Contract) -> None:
         for k in c.entity_column_pair:
             if k not in names or c.column(k).nullable:
                 raise ContractError(f"{c.name}: entity column {k} must be declared non-nullable")
+        schemes = c.column(c.entity_column_pair[0]).allowed
+        if not schemes or not set(schemes) <= set(ID_SCHEMES):
+            raise ContractError(f"{c.name}: entity scheme column must allow only {ID_SCHEMES}")
+    for k in c.partition_by:
+        if k not in names:
+            raise ContractError(f"{c.name}: partition_by column {k} not declared")
     for chk in c.checks:
         if chk not in ROW_CHECKS:
             raise ContractError(f"{c.name}: unknown check {chk}")
+        for k in ROW_CHECKS[chk][0]:
+            if k not in names:
+                raise ContractError(f"{c.name}: check {chk} needs column {k}")
 
 
 class BatchInvalid(ValueError):
@@ -82,17 +100,32 @@ class BatchInvalid(ValueError):
         self.reasons = reasons
 
 
+def _count(mask) -> int:
+    return pc.sum(pc.cast(pc.fill_null(mask, False), pa.int64())).as_py() or 0
+
+
 def _check_ocr_confidence(t: pa.Table) -> list[str]:
+    """OCR rows need confidence, source_doc_id and source_page; any confidence is within 0..1."""
     is_ocr = pc.equal(t["extraction_method"], "ocr")
     conf = t["confidence"]
-    bad = pc.and_kleene(
-        is_ocr, pc.or_kleene(pc.is_null(conf), pc.or_kleene(pc.less(conf, 0), pc.greater(conf, 1)))
-    )
-    n = pc.sum(pc.cast(pc.fill_null(bad, False), pa.int64())).as_py() or 0
-    return [f"ocr_confidence_missing_or_out_of_range:{n}"] if n else []
+    out = []
+    n = _count(pc.or_kleene(pc.less(conf, 0), pc.greater(conf, 1)))
+    if n:
+        out.append(f"confidence_out_of_range:{n}")
+    for col in ("confidence", "source_doc_id", "source_page"):
+        n = _count(pc.and_kleene(is_ocr, pc.is_null(t[col])))
+        if n:
+            out.append(f"ocr_lineage_missing:{col}:{n}")
+    return out
 
 
-ROW_CHECKS = {"ocr_confidence": _check_ocr_confidence}
+# name -> (columns the check needs, check)
+ROW_CHECKS = {
+    "ocr_confidence": (
+        ("extraction_method", "confidence", "source_doc_id", "source_page"),
+        _check_ocr_confidence,
+    ),
+}
 
 
 def conform(
@@ -104,6 +137,8 @@ def conform(
 ) -> pa.Table:
     """Cast table to the contract schema and run every row check. Raises BatchInvalid."""
     reasons: list[str] = []
+    if len(set(table.column_names)) != len(table.column_names):
+        raise BatchInvalid(["duplicate_columns"])
     expected = [c.name for c in contract.columns]
     extra = sorted(set(table.column_names) - set(expected))
     missing = sorted(set(expected) - set(table.column_names))
@@ -118,14 +153,22 @@ def conform(
     kt = table.schema.field("known_at").type
     if pa.types.is_timestamp(kt) and kt.tz is None:
         raise BatchInvalid(["known_at_without_timezone"])
+    for col in contract.columns:
+        n = table[col.name].null_count
+        if not col.nullable and n:
+            reasons.append(f"nulls_in_required:{col.name}:{n}")
+        if pa.types.is_decimal(col.type) and pa.types.is_floating(
+            table.schema.field(col.name).type
+        ):
+            reasons.append(f"float_for_decimal:{col.name}")
+    if reasons:
+        raise BatchInvalid(reasons)
     try:
         table = table.select(expected).cast(contract.schema, safe=True)
-    except (pa.ArrowInvalid, pa.ArrowNotImplementedError) as exc:
+    except (pa.ArrowInvalid, pa.ArrowNotImplementedError, pa.ArrowTypeError, ValueError) as exc:
         raise BatchInvalid([f"type_cast_failed:{exc}"]) from exc
     for col in contract.columns:
         arr = table[col.name]
-        if not col.nullable and arr.null_count:
-            reasons.append(f"nulls_in_required:{col.name}:{arr.null_count}")
         if col.allowed is not None:
             ok = pc.is_in(arr, value_set=pa.array(col.allowed, type=pa.string()))
             n = pc.sum(pc.cast(pc.invert(pc.fill_null(ok, True)), pa.int64())).as_py() or 0
@@ -144,7 +187,7 @@ def conform(
     if n_dup:
         reasons.append(f"duplicate_natural_key:{n_dup}")
     for chk in contract.checks:
-        reasons.extend(ROW_CHECKS[chk](table))
+        reasons.extend(ROW_CHECKS[chk][1](table))
     if reasons:
         raise BatchInvalid(reasons)
     return table
