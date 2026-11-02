@@ -196,7 +196,7 @@ def test_fundamentals_v2_shape():
     assert "USD/shares" in FUNDAMENTALS.column("unit").doc
 
 
-def test_registry_holds_no_fundamentals_v2():
+def test_registry_holds_no_fundamentals_v1():
     from myopendata.contracts.registry import discover_contracts
 
     assert ("fundamentals", 1) not in discover_contracts()
