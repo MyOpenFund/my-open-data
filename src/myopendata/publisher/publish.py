@@ -414,7 +414,9 @@ class _Run:
                     ],
                 )
             con.execute(
-                "INSERT INTO lake.ref.batches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO lake.ref.batches (batch_id, contract, major, version, producer, "
+                "run_id, rows, content_sha256, published_at, rows_skipped) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     bid,
                     c.name,
@@ -425,6 +427,7 @@ class _Run:
                     out.num_rows,
                     rows_hash,
                     datetime.now(UTC),
+                    0,
                 ],
             )
             con.execute(

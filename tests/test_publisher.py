@@ -510,3 +510,39 @@ def test_explicit_empty_policy_is_honoured(approved):
     land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
     rep = publish_pending(approved, now=NOW, resolving_schemes=())
     assert rep.quarantined[0]["reasons"][0].startswith("subject_not_resolvable")
+
+
+def test_old_catalogue_gains_rows_skipped_without_losing_rows(cfg):
+    import duckdb
+
+    cfg.lake_data.mkdir(parents=True)
+    con = duckdb.connect()
+    con.execute("INSTALL ducklake; LOAD ducklake")
+    con.execute(
+        f"ATTACH 'ducklake:{cfg.catalog}' AS lake (DATA_PATH '{cfg.lake_data.as_posix()}/')"
+    )
+    con.execute("CREATE SCHEMA lake.ref")
+    con.execute(
+        "CREATE TABLE lake.ref.batches (batch_id VARCHAR, contract VARCHAR, major INTEGER, "
+        "version VARCHAR, producer VARCHAR, run_id VARCHAR, rows BIGINT, "
+        "content_sha256 VARCHAR, published_at TIMESTAMPTZ)"
+    )
+    con.execute(
+        "INSERT INTO lake.ref.batches VALUES ('old', 'x', 1, '1.0.0', 'p', 'r', 3, 'h', now())"
+    )
+    con.close()
+    connect(cfg, read_only=False).close()
+    assert q(cfg, "SELECT batch_id, rows, rows_skipped FROM lake.ref.batches") == [("old", 3, None)]
+
+
+def test_reconnecting_adds_no_snapshot(cfg):
+    connect(cfg, read_only=False).close()
+    before = q(cfg, "SELECT count(*) FROM lake.snapshots()")
+    connect(cfg, read_only=False).close()
+    assert q(cfg, "SELECT count(*) FROM lake.snapshots()") == before
+
+
+def test_ledger_records_rows_skipped_zero_for_a_new_batch(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    publish_pending(approved, now=NOW)
+    assert q(approved, "SELECT rows, rows_skipped FROM lake.ref.batches") == [(1, 0)]
