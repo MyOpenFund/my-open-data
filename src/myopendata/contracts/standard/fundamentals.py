@@ -4,12 +4,16 @@ from myopendata.contracts.base import Column, Contract
 from myopendata.contracts.standard._common import BITEMPORAL_COLUMNS, ID_SCHEMES
 
 EXTRACTION_METHODS = ("xbrl_filed", "xbrl_inline", "ocr", "vendor_api", "register_api", "manual")
-FREQUENCIES = ("annual", "semiannual", "quarterly")
+# frequency = the period the value covers. Durations: quarterly (~3 months), semiannual
+# (~6 months, incl. US 10-Q six-month year-to-date), annual (~12 months). instant = a
+# balance-sheet value at valid_date (period_start null), one key per balance date whatever the
+# filing frequency of the source or region (2.0.0).
+FREQUENCIES = ("annual", "semiannual", "quarterly", "instant")
 BASES = ("consolidated", "parent")
 
 FUNDAMENTALS = Contract(
     name="fundamentals",
-    version="1.0.0",
+    version="2.0.0",
     kind="fact",
     owner="my-open-data",
     licence="per-source; see source_code",
@@ -26,12 +30,27 @@ FUNDAMENTALS = Contract(
             "concept", pa.string(), nullable=False, doc="Normalised concept (us-gaap/ifrs mapping)."
         ),
         Column("original_tag", pa.string(), doc="Tag or label as filed."),
-        Column("period_start", pa.date32(), doc="Null for instant (balance-sheet) facts."),
-        Column("frequency", pa.string(), nullable=False, allowed=FREQUENCIES),
+        Column(
+            "period_start",
+            pa.date32(),
+            doc="First day of a duration; null exactly when frequency = instant.",
+        ),
+        Column(
+            "frequency",
+            pa.string(),
+            nullable=False,
+            allowed=FREQUENCIES,
+            doc="Period covered: quarterly, semiannual, annual (durations) or instant.",
+        ),
         Column("fiscal_year", pa.int32()),
         Column("basis", pa.string(), nullable=False, allowed=BASES),
         Column("value", pa.decimal128(38, 6), nullable=False),
-        Column("unit", pa.string(), nullable=False, doc="ISO 4217 currency, 'shares' or 'pure'."),
+        Column(
+            "unit",
+            pa.string(),
+            nullable=False,
+            doc="As filed: ISO 4217 currency, 'shares', per share e.g. 'USD/shares', or 'pure'.",
+        ),
         Column("extraction_method", pa.string(), nullable=False, allowed=EXTRACTION_METHODS),
         Column("confidence", pa.float64(), doc="0..1; required when extraction_method = ocr."),
         Column("source_page", pa.int32(), doc="Page in source_doc_id (OCR)."),
@@ -48,5 +67,5 @@ FUNDAMENTALS = Contract(
     ),
     entity_column_pair=("entity_scheme", "entity_value"),
     partition_by=("source_code",),
-    checks=("ocr_confidence",),
+    checks=("ocr_confidence", "instant_period"),
 )

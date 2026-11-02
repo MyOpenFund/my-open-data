@@ -39,12 +39,12 @@ def test_publishes_entities_then_facts_in_one_run(approved):
     land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
     rep = publish_pending(approved, now=NOW)
     assert rep.exit_code == 0, rep.to_json()
-    assert [p["contract"] for p in rep.published] == ["entity_observations_v1", "fundamentals_v1"]
-    (eid,) = q(approved, "SELECT DISTINCT entity_id FROM lake.facts.fundamentals_v1")[0]
+    assert [p["contract"] for p in rep.published] == ["entity_observations_v1", "fundamentals_v2"]
+    (eid,) = q(approved, "SELECT DISTINCT entity_id FROM lake.facts.fundamentals_v2")[0]
     assert eid.startswith("ent_")
     links = q(approved, "SELECT scheme, value FROM lake.ref.entity_identifiers ORDER BY 1")
     assert links == [("cik", "0000789019"), ("lei", "INR2EJN1ERAN0W5ZP974")]
-    assert list((approved.landing / "_published" / "fundamentals_v1").iterdir())
+    assert list((approved.landing / "_published" / "fundamentals_v2").iterdir())
     snaps = q(
         approved, "SELECT commit_message FROM lake.snapshots() WHERE commit_message IS NOT NULL"
     )
@@ -71,7 +71,7 @@ def test_unknown_entity_quarantines_batch(approved):
     rep = publish_pending(approved, now=NOW)
     assert rep.exit_code == 3
     assert rep.quarantined[0]["reasons"][0].startswith("unknown_entity")
-    qdir = next((approved.landing / "_quarantine" / "fundamentals_v1").iterdir())
+    qdir = next((approved.landing / "_quarantine" / "fundamentals_v2").iterdir())
     assert json.loads((qdir / "reason.json").read_text())["reasons"]
 
 
@@ -212,10 +212,10 @@ def test_manifest_lies_about_rows_are_quarantined(approved):
 
 
 def test_one_malformed_batch_does_not_stop_the_others(approved):
-    bad = approved.landing / "fundamentals_v1" / ("0" * 32)
+    bad = approved.landing / "fundamentals_v2" / ("0" * 32)
     bad.mkdir(parents=True)
     (bad / "batch.json").write_text("{not json")
-    junk = approved.landing / "fundamentals_v1" / "not-a-batch"
+    junk = approved.landing / "fundamentals_v2" / "not-a-batch"
     junk.mkdir()
     land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
     land(approved, FUNDAMENTALS, [fund_row()])
@@ -333,7 +333,7 @@ def test_additive_minor_is_auto_approved_and_column_added(approved):
     publish_pending(approved, now=NOW)
     minor = dataclasses.replace(
         FUNDAMENTALS,
-        version="1.1.0",
+        version="2.1.0",
         columns=FUNDAMENTALS.columns + (Column("segment", pa.string()),),
     )
     write_batch(
@@ -347,13 +347,13 @@ def test_additive_minor_is_auto_approved_and_column_added(approved):
     rep = publish_pending(
         approved,
         now=NOW,
-        contracts={("fundamentals", 1): minor, ("entity_observations", 1): ENTITY_OBSERVATIONS},
+        contracts={("fundamentals", 2): minor, ("entity_observations", 1): ENTITY_OBSERVATIONS},
     )
     assert rep.exit_code == 0, rep.to_json()
-    assert q(approved, "SELECT approved_by FROM lake.ref.contracts WHERE version = '1.1.0'") == [
+    assert q(approved, "SELECT approved_by FROM lake.ref.contracts WHERE version = '2.1.0'") == [
         ("auto-minor",)
     ]
-    assert q(approved, "SELECT concept, segment FROM lake.facts.fundamentals_v1 ORDER BY 1") == [
+    assert q(approved, "SELECT concept, segment FROM lake.facts.fundamentals_v2 ORDER BY 1") == [
         ("LongTermDebt", None),
         ("Revenue", "Cloud"),
     ]
@@ -361,7 +361,7 @@ def test_additive_minor_is_auto_approved_and_column_added(approved):
 
 def test_breaking_change_in_same_major_quarantines(approved):
     breaking = dataclasses.replace(
-        FUNDAMENTALS, version="1.1.0", natural_key=FUNDAMENTALS.natural_key + ("unit",)
+        FUNDAMENTALS, version="2.1.0", natural_key=FUNDAMENTALS.natural_key + ("unit",)
     )
     land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
     write_batch(
@@ -375,7 +375,7 @@ def test_breaking_change_in_same_major_quarantines(approved):
     rep = publish_pending(
         approved,
         now=NOW,
-        contracts={("fundamentals", 1): breaking, ("entity_observations", 1): ENTITY_OBSERVATIONS},
+        contracts={("fundamentals", 2): breaking, ("entity_observations", 1): ENTITY_OBSERVATIONS},
     )
     assert rep.quarantined[0]["reasons"] == ["contract_fingerprint_mismatch"]
 
@@ -481,7 +481,7 @@ def test_infrastructure_error_on_one_batch_is_fatal_but_others_publish(approved,
     rep = publish_pending(approved, now=NOW)
     assert rep.exit_code == 1 and rep.errors[0]["error"].startswith("IOException")
     assert [p["contract"] for p in rep.published] == ["entity_observations_v1"]
-    assert list((approved.landing / "fundamentals_v1").iterdir())  # left in place for a retry
+    assert list((approved.landing / "fundamentals_v2").iterdir())  # left in place for a retry
 
 
 def test_move_never_overwrites(tmp_path):
