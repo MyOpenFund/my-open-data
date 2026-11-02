@@ -63,7 +63,7 @@ ship with this library.
 
 ```
 myopendata contracts list
-myopendata contracts approve fundamentals 1 --by <name>   # reviewed step; refuses conflicting definitions
+myopendata contracts approve fundamentals 2 --by <name>   # reviewed step; refuses conflicting definitions
 myopendata publish                                          # exit 0 ok · 1 fatal · 3 degraded
 ```
 
@@ -71,6 +71,10 @@ myopendata publish                                          # exit 0 ok · 1 fat
 quarantines failures in `landing/_quarantine/` with a `reason.json`, publishes the rest atomically
 (one DuckLake snapshot per batch, commit message = batch id) and writes a run report under
 `reports/publisher/`. Design, security model and gotchas: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+Producers may re-emit full history: rows already published with the same values are skipped and
+counted (`skipped_rows` in the report, `rows_skipped` in `ref.batches`); the same key and
+`known_at` with another value quarantines the batch (`conflicting_republish`).
 
 ## Licence
 
