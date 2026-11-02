@@ -27,11 +27,20 @@ producer ──writer──▶ landing/<table>/<batch_id>/{data.parquet, batch.j
 * **Row-level idempotence (fact contracts).** Producers may re-emit their whole history on every
   run. A replayed batch (same `batch_id`) is skipped through the `ref.batches` ledger. A new batch
   is anti-joined on `(natural_key, known_at)` against the published table, scoped to the batch's
-  entities and partitions: identical rows are skipped and counted (`rows_skipped`), new rows are
+  values of the key columns among the entity column pair and the partition columns (never on the
+  resolved `entity_id`): identical rows are skipped and counted (`rows_skipped`), new rows are
   published, and a row with the same key and `known_at` but another value quarantines the batch
-  (`conflicting_republish:<n>`). Every audited batch gets its `ref.batches` row, even when it
-  adds no row (`rows = 0`): the ledger is the trail of what each producer run submitted and
-  changed. Such a batch writes no data file.
+  (`conflicting_republish:<n>`).
+  * Values are compared exactly (null-safe): a producer must re-emit bit-identical values,
+    floats included; a recomputed float that differs in its last bit is a conflict.
+  * Only the columns of the major's *first approved definition* (lowest approved version in
+    `ref.contracts`) are compared. A column added by a later MINOR never causes a conflict, before
+    or after the table gains it; enriching an existing row with such a column needs a later
+    `known_at` (a restatement), otherwise the re-emitted value is skipped with the row.
+  * `ref.batches.rows` is the number of rows the batch inserted; the batch's total is
+    `rows + rows_skipped`. Every audited batch gets its `ref.batches` row, even when it adds no
+    row (`rows = 0`): the ledger is the trail of what each producer run submitted and changed.
+    Such a batch writes no data file.
 * **Recovering a quarantined batch:** fix the cause (approve the contract, fix the producer and
   land a new batch, or for an identity conflict correct the source data), then either land a new
   batch or move the directory back from `_quarantine/<table>/` to `landing/<table>/` and delete
