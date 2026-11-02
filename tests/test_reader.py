@@ -132,14 +132,15 @@ def test_entity_master_joins(store):
     assert t == [("MICROSOFT CORP",)]
 
 
-def test_same_known_at_resolved_by_publication_order(approved):
+def test_same_known_at_correction_is_quarantined_not_applied(approved):
     land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
     land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2))])
     assert publish_pending(approved, now=NOW).exit_code == 0
-    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(1))], run_id="r2")  # correction
-    assert publish_pending(approved, now=NOW).exit_code == 0
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(1))], run_id="r2")  # same known_at
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 3 and rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
     with Store.open(approved) as s:
-        assert _sec_value(s.read_asof("fundamentals")) == [Decimal(1)]
+        assert _sec_value(s.read_asof("fundamentals")) == [Decimal(2)]
 
 
 def test_known_at_equal_to_as_of_is_known_and_offsets_are_honoured(store):

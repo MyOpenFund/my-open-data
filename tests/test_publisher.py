@@ -2,6 +2,7 @@ import dataclasses
 import json
 import shutil
 from datetime import date
+from decimal import Decimal
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -546,3 +547,121 @@ def test_ledger_records_rows_skipped_zero_for_a_new_batch(approved):
     land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
     publish_pending(approved, now=NOW)
     assert q(approved, "SELECT rows, rows_skipped FROM lake.ref.batches") == [(1, 0)]
+
+
+def _fund_files(cfg):
+    return q(
+        cfg,
+        "SELECT count(*) FROM ducklake_list_files('lake', 'fundamentals_v2', schema => 'facts')",
+    )
+
+
+def test_partly_new_batch_publishes_only_new_rows(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    publish_pending(approved, now=NOW)
+    land(approved, FUNDAMENTALS, [fund_row(), fund_row(concept="Cash")], run_id="r2")
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 0, rep.to_json()
+    assert rep.published[0]["rows"] == 1 and rep.published[0]["rows_skipped"] == 1
+    assert rep.skipped_rows == 1
+    assert q(approved, "SELECT concept FROM lake.facts.fundamentals_v2 ORDER BY 1") == [
+        ("Cash",),
+        ("LongTermDebt",),
+    ]
+
+
+def test_batch_with_no_new_row_gets_a_ledger_row_and_no_data(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    land(approved, FUNDAMENTALS, [fund_row(concept="Cash")], run_id="r1b")
+    publish_pending(approved, now=NOW)
+    files = _fund_files(approved)
+    union = land(approved, FUNDAMENTALS, [fund_row(), fund_row(concept="Cash")], run_id="r2")
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 0 and rep.published == [
+        {
+            "batch_id": union.batch_id,
+            "contract": "fundamentals_v2",
+            "rows": 0,
+            "rows_skipped": 2,
+        }
+    ]
+    assert q(
+        approved,
+        f"SELECT rows, rows_skipped FROM lake.ref.batches WHERE batch_id = '{union.batch_id}'",
+    ) == [(0, 2)]
+    assert q(approved, "SELECT count(*) FROM lake.facts.fundamentals_v2") == [(2,)]
+    assert _fund_files(approved) == files
+    assert (approved.landing / "_published" / "fundamentals_v2" / union.batch_id).is_dir()
+    # replaying that same batch again hits the batch_id ledger, not the anti-join
+    land(approved, FUNDAMENTALS, [fund_row(), fund_row(concept="Cash")], run_id="r3")
+    rep = publish_pending(approved, now=NOW)
+    assert rep.skipped_duplicates == [union.batch_id] and not rep.published
+
+
+def test_same_key_and_known_at_with_another_value_is_quarantined(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2))])
+    publish_pending(approved, now=NOW)
+    land(
+        approved,
+        FUNDAMENTALS,
+        [fund_row(value=Decimal(1)), fund_row(concept="Cash")],
+        run_id="r2",
+    )
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 3
+    assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
+    assert q(approved, "SELECT concept, value FROM lake.facts.fundamentals_v2") == [
+        ("LongTermDebt", Decimal(2))
+    ]
+
+
+def test_conflict_between_two_batches_of_one_run(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2))])
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(1))], run_id="r1b")
+    rep = publish_pending(approved, now=NOW)
+    assert [p["rows"] for p in rep.published if p["contract"] == "fundamentals_v2"] == [1]
+    assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
+
+
+def test_a_null_column_compares_equal_to_null(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row(original_tag=None)])
+    publish_pending(approved, now=NOW)
+    land(
+        approved, FUNDAMENTALS, [fund_row(original_tag=None), fund_row(concept="Cash")], run_id="r2"
+    )
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 0 and rep.published[0]["rows_skipped"] == 1
+
+
+def test_identity_replay_keeps_attributes(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    publish_pending(approved, now=NOW)
+    before = q(approved, "SELECT * FROM lake.ref.entity_attributes")
+    land(
+        approved,
+        ENTITY_OBSERVATIONS,
+        [obs_rows(), obs_rows(id_scheme="ticker", id_value="MSFT", name=None, country=None)],
+        run_id="r2",
+    )
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 0 and rep.published[0]["rows_skipped"] == 1
+    assert q(approved, "SELECT * FROM lake.ref.entity_attributes") == before
+    assert q(approved, "SELECT count(*) FROM lake.facts.entity_observations_v1") == [(2,)]
+
+
+def test_other_entities_rows_never_count_as_known(approved):
+    land(
+        approved,
+        ENTITY_OBSERVATIONS,
+        [obs_rows(), obs_rows(subject_value="0000320193", id_value="HWUPKR0MPOU8FGXBT394")],
+    )
+    land(approved, FUNDAMENTALS, [fund_row()])
+    publish_pending(approved, now=NOW)
+    land(approved, FUNDAMENTALS, [fund_row(entity_value="0000320193")], run_id="r2")
+    rep = publish_pending(approved, now=NOW)
+    assert rep.published[0]["rows"] == 1 and rep.published[0]["rows_skipped"] == 0
