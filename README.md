@@ -75,9 +75,10 @@ quarantines failures in `landing/_quarantine/` with a `reason.json`, publishes t
 Producers may re-emit full history: rows already published with the same values (compared
 exactly, so re-emit bit-identical floats) are skipped and counted (`skipped_rows` in the report,
 `rows_skipped` in `ref.batches`, where `rows` counts only the inserted rows); the same key and
-`known_at` with another value quarantines the batch (`conflicting_republish`). Only the columns of
-the major's first approved definition are compared: filling a column added by a later minor into
-an existing row needs a later `known_at`.
+`known_at` with another value quarantines the batch (`conflicting_republish`). Columns of the
+major's first approved definition are compared strictly; columns added by a later minor are compared
+only where the published row holds a value (changing it is a conflict), and filling a NULL in one
+needs a later `known_at` to be recorded.
 
 ## Licence
 

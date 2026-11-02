@@ -186,7 +186,8 @@ def _first_columns(con, c: Contract) -> list[str]:
     """Column names of the first approved definition of the contract's major.
 
     The lowest approved version recorded in ref.contracts; columns that later MINORs added are not
-    in it. Falls back to the contract's own columns if the major has no approval row yet.
+    in it. Falls back to the contract's own columns if the major has no approval row yet or the
+    first row's definition is unreadable (NULL, malformed JSON, no `columns`).
     """
     rows = con.execute(
         "SELECT version, definition_json FROM lake.ref.contracts WHERE name = ? AND major = ?",
@@ -195,7 +196,10 @@ def _first_columns(con, c: Contract) -> list[str]:
     if not rows:
         return [col.name for col in c.columns]
     first = min(rows, key=lambda r: _semver(r[0]))
-    return [col[0] for col in json.loads(first[1])["columns"]]
+    try:
+        return [col[0] for col in json.loads(first[1])["columns"]]
+    except (TypeError, ValueError, KeyError, IndexError):
+        return [col.name for col in c.columns]
 
 
 def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
@@ -204,9 +208,12 @@ def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
     A row whose (natural_key, known_at) is already published is skipped when an identical row
     exists, and counted as a conflict otherwise: a value cannot change without a later known_at.
     Values are compared exactly (null-safe), so a producer must re-emit bit-identical values,
-    floats included. Only the columns of the major's first approved definition are compared
-    (intersected with the published table): a column added by a later MINOR never makes a
-    conflict, and enriching an existing row with it needs a later known_at. The lookup is scoped
+    floats included. Columns of the major's first approved definition are compared strictly
+    (intersected with the published table). Columns added by a later MINOR are compared only
+    where the published row holds a value: old rows holding NULL in them are still skipped, but
+    changing a published value is a conflict. Enriching a NULL in such a column at the same
+    known_at is skipped and the new value is NOT written; it needs a later known_at to be
+    recorded. The lookup is scoped
     to the batch's values of the natural-key columns among the entity column pair and the
     partition columns, so its cost follows the batch, not the table, and it depends neither on
     entity resolution nor on columns outside the key.
@@ -218,11 +225,10 @@ def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
     if have is None:
         return out, 0, 0
     key = [*c.natural_key, "known_at"]
-    compared = [
-        n
-        for n in _first_columns(con, c)
-        if n not in key and n not in RESERVED and n in have and n in out.column_names
-    ]
+    first = _first_columns(con, c)
+    comparable = [n for n in out.column_names if n not in key and n not in RESERVED and n in have]
+    strict = [n for n in comparable if n in first]
+    added = [n for n in comparable if n not in first]
     scoped = [
         s
         for s in dict.fromkeys([*(c.entity_column_pair or ()), *c.partition_by])
@@ -232,7 +238,13 @@ def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
         f"EXISTS (SELECT 1 FROM _incoming AS x WHERE x.{s} IS NOT DISTINCT FROM t.{s})"
         for s in scoped
     )
-    same = " AND ".join(f"t.{n} IS NOT DISTINCT FROM i.{n}" for n in compared) or "TRUE"
+    same = (
+        " AND ".join(
+            [f"t.{n} IS NOT DISTINCT FROM i.{n}" for n in strict]
+            + [f"(t.{n} IS NULL OR t.{n} IS NOT DISTINCT FROM i.{n})" for n in added]
+        )
+        or "TRUE"
+    )
     on = " AND ".join(f"t.{k} = i.{k}" for k in key)
     con.register("_incoming", out.append_column("_row", pa.array(range(out.num_rows), pa.int64())))
     try:

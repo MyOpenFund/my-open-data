@@ -763,6 +763,34 @@ def test_columns_of_the_first_definition_are_still_compared_under_a_minor(approv
     assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
 
 
+def test_a_changed_value_in_a_minor_added_column_is_a_conflict(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    publish_pending(approved, now=NOW)
+    land(approved, SEGMENTED, [fund_row(concept="Cash", segment="Cloud")], run_id="r2")
+    rep = publish_pending(approved, now=NOW, contracts=SEGMENTED_REG)
+    assert [(p["rows"], p["rows_skipped"]) for p in rep.published] == [(1, 0)]
+    land(approved, SEGMENTED, [fund_row(concept="Cash", segment="OnPrem")], run_id="r3")
+    rep = publish_pending(approved, now=NOW, contracts=SEGMENTED_REG)
+    assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
+    assert q(approved, "SELECT segment FROM lake.facts.fundamentals_v2 WHERE concept = 'Cash'") == [
+        ("Cloud",)
+    ]
+
+
+def test_unreadable_first_definition_falls_back_to_the_current_columns(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    publish_pending(approved, now=NOW)
+    con = connect(approved, read_only=False)
+    con.execute("UPDATE lake.ref.contracts SET definition_json = NULL WHERE name = 'fundamentals'")
+    con.close()
+    land(approved, FUNDAMENTALS, [fund_row(), fund_row(concept="Cash")], run_id="r2")
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 0, rep.to_json()
+    assert [(p["rows"], p["rows_skipped"]) for p in rep.published] == [(1, 1)]
+
+
 def test_lookup_does_not_depend_on_the_resolved_entity_id(approved):
     land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
     land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2))])
