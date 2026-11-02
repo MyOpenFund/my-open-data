@@ -77,7 +77,7 @@ def fund_row(**over):
         concept="LongTermDebt",
         original_tag="us-gaap:LongTermDebt",
         period_start=None,
-        frequency="annual",
+        frequency="instant",
         fiscal_year=2025,
         basis="consolidated",
         value=Decimal(40152000000),

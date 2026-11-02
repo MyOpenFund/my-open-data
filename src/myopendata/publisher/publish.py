@@ -19,12 +19,13 @@ from pathlib import Path
 
 import duckdb
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from myopendata.config import StoreConfig
 from myopendata.contracts.base import Contract
 from myopendata.contracts.registry import discover_contracts
-from myopendata.contracts.rules import BatchInvalid, conform, validate_contract
+from myopendata.contracts.rules import RESERVED, BatchInvalid, conform, validate_contract
 from myopendata.lake import connect
 from myopendata.publisher.entities import (
     EntityConflict,
@@ -59,6 +60,7 @@ class PublishReport:
     started_at: str
     published: list[dict] = field(default_factory=list)
     skipped_duplicates: list[str] = field(default_factory=list)
+    skipped_rows: int = 0  # audited rows already published with identical values
     quarantined: list[dict] = field(default_factory=list)
     errors: list[dict] = field(default_factory=list)  # infrastructure failures on one batch
     fatal: str | None = None
@@ -167,23 +169,111 @@ def _fq(c: Contract) -> str:
     return f"lake.{'facts' if c.kind == 'fact' else 'derived'}.{c.table_name}"
 
 
-def _ensure_table(con, c: Contract, sample: pa.Table) -> None:
+def _published_columns(con, c: Contract) -> set[str] | None:
+    """Column names of the contract's published table, or None if it does not exist yet."""
     schema = "facts" if c.kind == "fact" else "derived"
     exists = con.execute(
         "SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake' AND schema_name = ? "
         "AND table_name = ?",
         [schema, c.table_name],
     ).fetchall()[0][0]
+    if not exists:
+        return None
+    return {r[0] for r in con.execute(f"DESCRIBE {_fq(c)}").fetchall()}
+
+
+def _first_columns(con, c: Contract) -> list[str]:
+    """Column names of the first approved definition of the contract's major.
+
+    The lowest approved version recorded in ref.contracts; columns that later MINORs added are not
+    in it. Falls back to the contract's own columns if the major has no approval row yet or the
+    first row's definition is unreadable (NULL, malformed JSON, no `columns`).
+    """
+    rows = con.execute(
+        "SELECT version, definition_json FROM lake.ref.contracts WHERE name = ? AND major = ?",
+        [c.name, c.major],
+    ).fetchall()
+    if not rows:
+        return [col.name for col in c.columns]
+    first = min(rows, key=lambda r: _semver(r[0]))
+    try:
+        return [col[0] for col in json.loads(first[1])["columns"]]
+    except (TypeError, ValueError, KeyError, IndexError):
+        return [col.name for col in c.columns]
+
+
+def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
+    """Row-level idempotence for fact contracts (chantier 8, spec §2).
+
+    A row whose (natural_key, known_at) is already published is skipped when an identical row
+    exists, and counted as a conflict otherwise: a value cannot change without a later known_at.
+    Values are compared exactly (null-safe), so a producer must re-emit bit-identical values,
+    floats included. Columns of the major's first approved definition are compared strictly
+    (intersected with the published table). Columns added by a later MINOR are compared only
+    where the published row holds a value: old rows holding NULL in them are still skipped, but
+    changing a published value is a conflict. Enriching a NULL in such a column at the same
+    known_at is skipped and the new value is NOT written; it needs a later known_at to be
+    recorded. The lookup is scoped
+    to the batch's values of the natural-key columns among the entity column pair and the
+    partition columns, so its cost follows the batch, not the table, and it depends neither on
+    entity resolution nor on columns outside the key.
+    Returns (rows to insert, rows skipped, rows conflicting).
+    """
+    if c.kind != "fact" or out.num_rows == 0:
+        return out, 0, 0
+    have = _published_columns(con, c)
+    if have is None:
+        return out, 0, 0
+    key = [*c.natural_key, "known_at"]
+    first = _first_columns(con, c)
+    comparable = [n for n in out.column_names if n not in key and n not in RESERVED and n in have]
+    strict = [n for n in comparable if n in first]
+    added = [n for n in comparable if n not in first]
+    scoped = [
+        s
+        for s in dict.fromkeys([*(c.entity_column_pair or ()), *c.partition_by])
+        if s in c.natural_key
+    ]
+    where = " AND ".join(
+        f"EXISTS (SELECT 1 FROM _incoming AS x WHERE x.{s} IS NOT DISTINCT FROM t.{s})"
+        for s in scoped
+    )
+    same = (
+        " AND ".join(
+            [f"t.{n} IS NOT DISTINCT FROM i.{n}" for n in strict]
+            + [f"(t.{n} IS NULL OR t.{n} IS NOT DISTINCT FROM i.{n})" for n in added]
+        )
+        or "TRUE"
+    )
+    on = " AND ".join(f"t.{k} = i.{k}" for k in key)
+    con.register("_incoming", out.append_column("_row", pa.array(range(out.num_rows), pa.int64())))
+    try:
+        matched = con.execute(
+            f"SELECT i._row, bool_or({same}) FROM _incoming AS i JOIN "
+            f"(SELECT * FROM {_fq(c)} AS t WHERE {where or 'TRUE'}) AS t ON {on} "
+            "GROUP BY i._row"
+        ).fetchall()
+    finally:
+        con.unregister("_incoming")
+    if not matched:
+        return out, 0, 0
+    skipped = sum(1 for _, identical in matched if identical)
+    known = pa.array(sorted(r for r, _ in matched), pa.int64())
+    keep = pc.invert(pc.is_in(pa.array(range(out.num_rows), pa.int64()), value_set=known))
+    return out.filter(keep), skipped, len(matched) - skipped
+
+
+def _ensure_table(con, c: Contract, sample: pa.Table) -> None:
+    have = _published_columns(con, c)
     con.register("_sample", sample)
     try:
-        if not exists:
+        if have is None:
             con.execute(f"CREATE TABLE {_fq(c)} AS SELECT * FROM _sample LIMIT 0")
             if c.partition_by:
                 con.execute(
                     f"ALTER TABLE {_fq(c)} SET PARTITIONED BY ({', '.join(c.partition_by)})"
                 )
             return
-        have = {r[0] for r in con.execute(f"DESCRIBE {_fq(c)}").fetchall()}
         types = {r[0]: r[1] for r in con.execute("DESCRIBE _sample").fetchall()}
         for name in sample.column_names:
             if name not in have:  # additive MINOR change
@@ -377,29 +467,46 @@ class _Run:
             eids = [None] * t.num_rows
         out = t.add_column(0, "entity_id", pa.array(eids, pa.string()))
         out = out.append_column("batch_id", pa.array([bid] * t.num_rows, pa.string()))
-        self.commit(c, m, bid, out, eids, new_links, state, rows_hash)
+        new, skipped, conflicts = _split_known(self.con, c, out)
+        if conflicts:
+            return self.quarantine(path, m, [f"conflicting_republish:{conflicts}"])
+        self.commit(c, m, bid, new, new_links, state, rows_hash, skipped)
         for eid, scheme, value, _, _ in new_links:
             self.links[(scheme, value)] = eid
         _move(path, self.cfg.landing, "_published", path.parent.name, bid, self.rep.run_id)
-        self.rep.published.append({"batch_id": bid, "contract": c.table_name, "rows": t.num_rows})
+        self.rep.skipped_rows += skipped
+        self.rep.published.append(
+            {
+                "batch_id": bid,
+                "contract": c.table_name,
+                "rows": new.num_rows,
+                "rows_skipped": skipped,
+            }
+        )
         return None
 
-    def commit(self, c, m, bid, out, eids, new_links, state, rows_hash) -> None:
+    def commit(self, c, m, bid, out, new_links, state, rows_hash, skipped) -> None:
+        """One DuckLake transaction: new rows (if any), links, attributes, ledger row.
+
+        A batch whose rows are all already published inserts nothing into the fact table:
+        the transaction carries only its ref.batches row (audit trail of every producer run).
+        """
         con = self.con
         con.execute("BEGIN")
         try:
-            _ensure_table(con, c, out)
-            con.register("_batch", out)
-            cols = ", ".join(out.column_names)
-            con.execute(f"INSERT INTO {_fq(c)} ({cols}) SELECT {cols} FROM _batch")
-            con.unregister("_batch")
+            if out.num_rows:
+                _ensure_table(con, c, out)
+                con.register("_batch", out)
+                cols = ", ".join(out.column_names)
+                con.execute(f"INSERT INTO {_fq(c)} ({cols}) SELECT {cols} FROM _batch")
+                con.unregister("_batch")
             if new_links:
                 con.executemany(
                     "INSERT INTO lake.ref.entity_identifiers VALUES (?, ?, ?, ?, ?, ?)",
                     [(*lk, bid) for lk in new_links],
                 )
-            if c.resolves_entities:
-                rebuild_attributes(con, set(eids), _fq(c))
+            if c.resolves_entities and out.num_rows:
+                rebuild_attributes(con, set(out["entity_id"].to_pylist()), _fq(c))
             if state == "auto_minor":
                 con.execute(
                     "INSERT INTO lake.ref.contracts VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -414,7 +521,9 @@ class _Run:
                     ],
                 )
             con.execute(
-                "INSERT INTO lake.ref.batches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO lake.ref.batches (batch_id, contract, major, version, producer, "
+                "run_id, rows, content_sha256, published_at, rows_skipped) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     bid,
                     c.name,
@@ -425,6 +534,7 @@ class _Run:
                     out.num_rows,
                     rows_hash,
                     datetime.now(UTC),
+                    skipped,
                 ],
             )
             con.execute(

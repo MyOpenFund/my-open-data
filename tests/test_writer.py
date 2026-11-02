@@ -1,5 +1,6 @@
 import json
-from datetime import timedelta
+from datetime import date, timedelta
+from decimal import Decimal
 
 import pyarrow as pa
 import pytest
@@ -25,8 +26,8 @@ def _write(tmp_path, rows, **kw):
 def test_batch_lands_with_manifest(tmp_path):
     ref = _write(tmp_path, [fund_row()], source_inputs=["companyfacts/CIK0000789019.json"])
     m = json.loads((ref.path / "batch.json").read_text())
-    assert ref.created and m["rows"] == 1 and m["contract_version"] == "1.0.0"
-    assert ref.path.parent.name == "fundamentals_v1"
+    assert ref.created and m["rows"] == 1 and m["contract_version"] == "2.0.0"
+    assert ref.path.parent.name == "fundamentals_v2"
     assert not list(tmp_path.glob("*/.tmp-*"))
 
 
@@ -136,8 +137,8 @@ def test_non_race_rename_error_is_raised(tmp_path):
 
     t = conform(FUNDAMENTALS, table(FUNDAMENTALS, [fund_row()]), now=NOW)
     bid = batch_id_for(FUNDAMENTALS, content_hash(t))
-    (tmp_path / "fundamentals_v1").mkdir()
-    (tmp_path / "fundamentals_v1" / bid).write_text("not a batch")
+    (tmp_path / "fundamentals_v2").mkdir()
+    (tmp_path / "fundamentals_v2" / bid).write_text("not a batch")
     with pytest.raises(OSError):
         _write(tmp_path, [fund_row()])
     assert not list(tmp_path.glob("*/.tmp-*"))
@@ -182,7 +183,7 @@ def test_other_contract_version_gives_other_batch(tmp_path):
     import dataclasses
 
     a = _write(tmp_path, [fund_row()])
-    other = dataclasses.replace(FUNDAMENTALS, version="1.0.1")
+    other = dataclasses.replace(FUNDAMENTALS, version="2.0.1")
     b = write_batch(
         other, table(other, [fund_row()]), landing_root=tmp_path, run_id="r", producer="t", now=NOW
     )
@@ -214,3 +215,47 @@ def test_string_valid_date_is_refused(tmp_path):
     t = t.set_column(i, "valid_date", pa.array(["2025-06-30"]))
     with pytest.raises(BatchInvalid, match="wrong_type:valid_date"):
         write_batch(FUNDAMENTALS, t, landing_root=tmp_path, run_id="r", producer="t", now=NOW)
+
+
+def test_instant_row_needs_null_period_start(tmp_path):
+    with pytest.raises(BatchInvalid, match="instant_period_mismatch:1"):
+        _write(tmp_path, [fund_row(frequency="instant", period_start=date(2024, 7, 1))])
+
+
+def test_duration_row_needs_period_start(tmp_path):
+    with pytest.raises(BatchInvalid, match="instant_period_mismatch:1"):
+        _write(tmp_path, [fund_row(frequency="annual", period_start=None)])
+
+
+def test_instant_period_mismatches_are_counted(tmp_path):
+    rows = [
+        fund_row(frequency="instant", period_start=date(2024, 7, 1)),
+        fund_row(concept="Revenue", frequency="annual", period_start=None),
+        fund_row(concept="Cash"),
+    ]
+    with pytest.raises(BatchInvalid) as exc:
+        _write(tmp_path, rows)
+    assert "instant_period_mismatch:2" in exc.value.reasons
+
+
+def test_instant_and_duration_rows_conform(tmp_path):
+    ref = _write(
+        tmp_path,
+        [
+            fund_row(),  # instant balance-sheet fact
+            fund_row(
+                concept="Revenue",
+                frequency="annual",
+                period_start=date(2024, 7, 1),
+                value=Decimal(281724000000),
+            ),
+            fund_row(
+                concept="EarningsPerShareDiluted",
+                frequency="quarterly",
+                period_start=date(2025, 4, 1),
+                value=Decimal("3.65"),
+                unit="USD/shares",
+            ),
+        ],
+    )
+    assert ref.rows == 3 and ref.path.parent.name == "fundamentals_v2"

@@ -58,7 +58,7 @@ def test_two_sources_both_visible(store):
 
 
 def test_where_filter_and_major_suffix(store):
-    t = store.read_asof("fundamentals_v1", ts("2025-12-01T00:00:00"), where="source_code = 'sec'")
+    t = store.read_asof("fundamentals_v2", ts("2025-12-01T00:00:00"), where="source_code = 'sec'")
     assert t.num_rows == 1
 
 
@@ -107,14 +107,14 @@ def test_save_true_not_in_v0(store):
 
 def test_datasets_lists_published_tables(store):
     names = {d["table"] for d in store.datasets()}
-    assert {"fundamentals_v1", "entity_observations_v1"} <= names
+    assert {"fundamentals_v2", "entity_observations_v1"} <= names
 
 
 def test_reader_is_read_only(store):
     import duckdb
 
     with pytest.raises(duckdb.Error):
-        store.con.execute("DELETE FROM lake.facts.fundamentals_v1")
+        store.con.execute("DELETE FROM lake.facts.fundamentals_v2")
 
 
 @pytest.mark.parametrize("suffix", [".csv", ".xlsx", ".parquet"])
@@ -126,20 +126,21 @@ def test_export(store, tmp_path, suffix):
 
 def test_entity_master_joins(store):
     t = store.con.execute(
-        "SELECT a.name FROM lake.facts.fundamentals_v1 f JOIN lake.ref.entity_attributes a "
+        "SELECT a.name FROM lake.facts.fundamentals_v2 f JOIN lake.ref.entity_attributes a "
         "USING (entity_id) WHERE a.valid_to IS NULL LIMIT 1"
     ).fetchall()
     assert t == [("MICROSOFT CORP",)]
 
 
-def test_same_known_at_resolved_by_publication_order(approved):
+def test_same_known_at_correction_is_quarantined_not_applied(approved):
     land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
     land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2))])
     assert publish_pending(approved, now=NOW).exit_code == 0
-    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(1))], run_id="r2")  # correction
-    assert publish_pending(approved, now=NOW).exit_code == 0
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(1))], run_id="r2")  # same known_at
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 3 and rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
     with Store.open(approved) as s:
-        assert _sec_value(s.read_asof("fundamentals")) == [Decimal(1)]
+        assert _sec_value(s.read_asof("fundamentals")) == [Decimal(2)]
 
 
 def test_known_at_equal_to_as_of_is_known_and_offsets_are_honoured(store):
@@ -212,8 +213,8 @@ def test_result_records_its_as_of(store):
 
 def test_datasets_carry_name_version_and_licence(store):
     d = {x["name"]: x for x in store.datasets()}
-    assert d["fundamentals"]["version"] == "1.0.0" and d["fundamentals"]["licence"]
-    assert d["fundamentals"]["table"] == "fundamentals_v1"
+    assert d["fundamentals"]["version"] == "2.0.0" and d["fundamentals"]["licence"]
+    assert d["fundamentals"]["table"] == "fundamentals_v2"
 
 
 def test_xlsx_export_writes_utc_timestamps_and_numbers(store, tmp_path):
@@ -275,7 +276,7 @@ def test_describe_carries_columns_docs_and_key(store):
     d = store.describe("fundamentals")
     cols = {c["name"]: c for c in d["columns"]}
     assert d["licence"] and d["doc"].startswith("Reported")
-    assert cols["frequency"]["allowed"] == ["annual", "semiannual", "quarterly"]
+    assert cols["frequency"]["allowed"] == ["annual", "semiannual", "quarterly", "instant"]
     assert "Normalised concept" in cols["concept"]["doc"]
     assert d["natural_key"][-1] == "source_code"
 
@@ -301,7 +302,7 @@ def test_approved_but_unpublished_minor_columns_are_not_offered(store, approved)
     store.close()
     minor = dataclasses.replace(
         FUNDAMENTALS,
-        version="1.1.0",
+        version="2.1.0",
         columns=FUNDAMENTALS.columns + (Column("segment", pa.string()),),
     )
     approve_contract(approved, minor, "reviewer")

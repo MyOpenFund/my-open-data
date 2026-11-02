@@ -24,6 +24,26 @@ producer ──writer──▶ landing/<table>/<batch_id>/{data.parquet, batch.j
   batches. Existing directories are never overwritten. A file lock (`landing/.publisher.lock`)
   refuses a second concurrent publisher. A batch that hit an infrastructure error stays in place
   and is retried by the next run.
+* **Row-level idempotence (fact contracts).** Producers may re-emit their whole history on every
+  run. A replayed batch (same `batch_id`) is skipped through the `ref.batches` ledger. A new batch
+  is anti-joined on `(natural_key, known_at)` against the published table, scoped to the batch's
+  values of the key columns among the entity column pair and the partition columns (never on the
+  resolved `entity_id`): identical rows are skipped and counted (`rows_skipped`), new rows are
+  published, and a row with the same key and `known_at` but another value quarantines the batch
+  (`conflicting_republish:<n>`).
+  * Values are compared exactly (null-safe): a producer must re-emit bit-identical values,
+    floats included; a recomputed float that differs in its last bit is a conflict.
+  * Columns of the major's *first approved definition* (lowest approved version in
+    `ref.contracts`) are compared strictly. Columns added by a later MINOR are compared only where
+    the published row holds a value: old rows holding NULL in them are still skipped, but changing
+    a published value is a conflict. Enriching a NULL in a minor-added column at the same
+    `known_at` is skipped and the new value is NOT written; it needs a later `known_at` (a
+    restatement) to be recorded. If the first definition is unreadable, the current contract's
+    columns are used.
+  * `ref.batches.rows` is the number of rows the batch inserted; the batch's total is
+    `rows + rows_skipped`. Every audited batch gets its `ref.batches` row, even when it adds no
+    row (`rows = 0`): the ledger is the trail of what each producer run submitted and changed.
+    Such a batch writes no data file.
 * **Recovering a quarantined batch:** fix the cause (approve the contract, fix the producer and
   land a new batch, or for an identity conflict correct the source data), then either land a new
   batch or move the directory back from `_quarantine/<table>/` to `landing/<table>/` and delete
@@ -38,9 +58,10 @@ producer ──writer──▶ landing/<table>/<batch_id>/{data.parquet, batch.j
 ## Two clocks
 
 `valid_date` / `known_at` are the business truth: `read_asof(t)` returns, per natural key, the
-latest row with `known_at <= t`; on a tie, the batch published last wins (by the publisher's
-wall clock: keep the publisher host on NTP). DuckLake snapshots are
-the audit trail: `read_asof(..., snapshot=n)` shows what the store held at version `n`. Every
+latest row with `known_at <= t`. The same key cannot hold two values at one `known_at`: the
+publisher quarantines such a batch (`conflicting_republish`), so a correction always carries a
+later `known_at`. (The reader still orders ties by publication time, for rows published before
+this rule.) DuckLake snapshots are the audit trail: `read_asof(..., snapshot=n)` shows what the store held at version `n`. Every
 result carries `myopendata.as_of` (and snapshot / recipe) in its schema metadata.
 
 ## Contracts
@@ -51,6 +72,9 @@ result carries `myopendata.as_of` (and snapshot / recipe) in its schema metadata
 * Standard contracts ship with the library (`fundamentals`, `entity_observations`); producers
   declare their own through the `myopendata.contracts` entry-point group (the spec's working name
   was `myopenfund.datasets`).
+* `fundamentals` 2.0.0 (first published major): `frequency` is `quarterly`, `semiannual`,
+  `annual` (durations) or `instant` (balance-sheet values, `period_start` null); the row check
+  `instant_period` enforces that pairing. v1 was never published and is no longer shipped.
 * A contract version is publishable once approved (`myopendata contracts approve NAME MAJOR`).
   A strictly additive MINOR (new nullable columns appended, everything else equal, higher version)
   is auto-approved; any other change within a major is refused (`contract_fingerprint_mismatch`).

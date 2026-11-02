@@ -17,6 +17,10 @@ REF_DDL = (
     """CREATE TABLE IF NOT EXISTS lake.ref.batches (
         batch_id VARCHAR, contract VARCHAR, major INTEGER, version VARCHAR, producer VARCHAR,
         run_id VARCHAR, rows BIGINT, content_sha256 VARCHAR, published_at TIMESTAMPTZ)""",
+    # Additive ledger column (chantier 8): rows the audit found already published. Added by
+    # ALTER, never in the CREATE, so new and migrated catalogues share one column order; a
+    # no-op ALTER commits no snapshot.
+    "ALTER TABLE lake.ref.batches ADD COLUMN IF NOT EXISTS rows_skipped BIGINT",
     """CREATE TABLE IF NOT EXISTS lake.ref.entity_identifiers (
         entity_id VARCHAR, scheme VARCHAR, value VARCHAR, source_code VARCHAR,
         first_known_at TIMESTAMPTZ, batch_id VARCHAR)""",

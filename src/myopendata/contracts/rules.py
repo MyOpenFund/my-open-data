@@ -135,12 +135,20 @@ def _check_ocr_confidence(t: pa.Table) -> list[str]:
     return out
 
 
+def _check_instant_period(t: pa.Table) -> list[str]:
+    """An instant (balance-sheet) fact has no period_start; a duration fact has one."""
+    instant = pc.equal(t["frequency"], "instant")
+    n = _count(pc.xor(instant, pc.is_null(t["period_start"])))
+    return [f"instant_period_mismatch:{n}"] if n else []
+
+
 # name -> (columns the check needs, check)
 ROW_CHECKS = {
     "ocr_confidence": (
         ("extraction_method", "confidence", "source_doc_id", "source_page"),
         _check_ocr_confidence,
     ),
+    "instant_period": (("frequency", "period_start"), _check_instant_period),
 }
 
 
