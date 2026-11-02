@@ -8,8 +8,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from conftest import NOW, fund_row, obs_rows, table, ts
 
-from myopendata.contracts.base import Column
+from myopendata.contracts.base import Column, Contract
 from myopendata.contracts.standard import ENTITY_OBSERVATIONS, FUNDAMENTALS
+from myopendata.contracts.standard._common import BITEMPORAL_COLUMNS
 from myopendata.lake import connect
 from myopendata.publisher import approve_contract, publish_pending
 from myopendata.writer import write_batch
@@ -534,6 +535,10 @@ def test_old_catalogue_gains_rows_skipped_without_losing_rows(cfg):
     con.close()
     connect(cfg, read_only=False).close()
     assert q(cfg, "SELECT batch_id, rows, rows_skipped FROM lake.ref.batches") == [("old", 3, None)]
+    snapshots = q(cfg, "SELECT count(*) FROM lake.snapshots()")
+    connect(cfg, read_only=False).close()  # the migration ran once: reconnecting changes nothing
+    assert q(cfg, "SELECT count(*) FROM lake.snapshots()") == snapshots
+    assert q(cfg, "SELECT batch_id, rows, rows_skipped FROM lake.ref.batches") == [("old", 3, None)]
 
 
 def test_reconnecting_adds_no_snapshot(cfg):
@@ -709,3 +714,123 @@ def test_other_entities_rows_never_count_as_known(approved):
     land(approved, FUNDAMENTALS, [fund_row(entity_value="0000320193")], run_id="r2")
     rep = publish_pending(approved, now=NOW)
     assert rep.published[0]["rows"] == 1 and rep.published[0]["rows_skipped"] == 0
+
+
+SEGMENTED = dataclasses.replace(
+    FUNDAMENTALS,
+    version="2.1.0",
+    columns=FUNDAMENTALS.columns + (Column("segment", pa.string()),),
+)
+SEGMENTED_REG = {("fundamentals", 2): SEGMENTED, ("entity_observations", 1): ENTITY_OBSERVATIONS}
+
+
+def test_full_history_reemitted_under_an_additive_minor_is_never_a_conflict(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    publish_pending(approved, now=NOW)
+    history = [fund_row(segment="Cloud")]
+    # run 2: the producer moves to 2.1.0 and re-emits its history with the new column filled
+    land(approved, SEGMENTED, history, run_id="r2")
+    rep = publish_pending(approved, now=NOW, contracts=SEGMENTED_REG)
+    assert rep.exit_code == 0, rep.to_json()
+    assert [(p["rows"], p["rows_skipped"]) for p in rep.published] == [(0, 1)]
+    # run 3: one new fact, the table gains the column (old rows hold NULL in it)
+    history.append(fund_row(concept="Cash", segment="Cloud"))
+    land(approved, SEGMENTED, history, run_id="r3")
+    rep = publish_pending(approved, now=NOW, contracts=SEGMENTED_REG)
+    assert rep.exit_code == 0, rep.to_json()
+    assert [(p["rows"], p["rows_skipped"]) for p in rep.published] == [(1, 1)]
+    # run 4: same history plus another new fact; the old NULL segment is not a conflict
+    history.append(fund_row(concept="Debt", segment="Cloud"))
+    land(approved, SEGMENTED, history, run_id="r4")
+    rep = publish_pending(approved, now=NOW, contracts=SEGMENTED_REG)
+    assert rep.exit_code == 0, rep.to_json()
+    assert not rep.quarantined
+    assert [(p["rows"], p["rows_skipped"]) for p in rep.published] == [(1, 2)]
+    assert q(approved, "SELECT concept, segment FROM lake.facts.fundamentals_v2 ORDER BY 1") == [
+        ("Cash", "Cloud"),
+        ("Debt", "Cloud"),
+        ("LongTermDebt", None),
+    ]
+
+
+def test_columns_of_the_first_definition_are_still_compared_under_a_minor(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2))])
+    publish_pending(approved, now=NOW)
+    land(approved, SEGMENTED, [fund_row(value=Decimal(1), segment="Cloud")], run_id="r2")
+    rep = publish_pending(approved, now=NOW, contracts=SEGMENTED_REG)
+    assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
+
+
+def test_lookup_does_not_depend_on_the_resolved_entity_id(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2))])
+    publish_pending(approved, now=NOW)
+    con = connect(approved, read_only=False)
+    con.execute("UPDATE lake.facts.fundamentals_v2 SET entity_id = 'formerly-resolved-elsewhere'")
+    con.close()
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(1))], run_id="r2")
+    rep = publish_pending(approved, now=NOW)
+    assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
+    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2)), fund_row(concept="Cash")], "r3")
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 0, rep.to_json()
+    assert [(p["rows"], p["rows_skipped"]) for p in rep.published] == [(1, 1)]
+
+
+def test_a_partition_column_outside_the_key_never_hides_a_conflict(cfg):
+    nullable_part = dataclasses.replace(FUNDAMENTALS, partition_by=("original_tag",))
+    reg = {(c.name, c.major): c for c in (ENTITY_OBSERVATIONS, nullable_part)}
+    approve_contract(cfg, ENTITY_OBSERVATIONS, "test")
+    approve_contract(cfg, nullable_part, "test")
+    land(cfg, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(cfg, nullable_part, [fund_row(original_tag=None)])
+    publish_pending(cfg, contracts=reg, now=NOW)
+    land(cfg, nullable_part, [fund_row(original_tag="us-gaap:LongTermDebt")], run_id="r2")
+    rep = publish_pending(cfg, contracts=reg, now=NOW)
+    assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
+    assert q(cfg, "SELECT count(*) FROM lake.facts.fundamentals_v2") == [(1,)]
+
+
+RATES = Contract(
+    name="rates",
+    version="1.0.0",
+    kind="fact",
+    owner="test",
+    licence="test",
+    columns=(
+        Column("series", pa.string(), nullable=False),
+        Column("value", pa.float64()),
+        *BITEMPORAL_COLUMNS,
+    ),
+    natural_key=("series", "valid_date", "source_code"),
+)
+
+
+def rate_row(**over):
+    base = dict(
+        series="EUR3M",
+        value=2.5,
+        valid_date=date(2025, 6, 30),
+        known_at=ts("2025-07-01T08:00:00"),
+        known_at_kind="published",
+        source_code="ecb",
+        source_doc_id=None,
+    )
+    base.update(over)
+    return base
+
+
+def test_contract_without_entity_columns_is_idempotent_too(cfg):
+    reg = {("rates", 1): RATES}
+    approve_contract(cfg, RATES, "test")
+    land(cfg, RATES, [rate_row()])
+    publish_pending(cfg, contracts=reg, now=NOW)
+    land(cfg, RATES, [rate_row(), rate_row(series="USD3M")], run_id="r2")
+    rep = publish_pending(cfg, contracts=reg, now=NOW)
+    assert rep.exit_code == 0, rep.to_json()
+    assert [(p["rows"], p["rows_skipped"]) for p in rep.published] == [(1, 1)]
+    land(cfg, RATES, [rate_row(value=2.6)], run_id="r3")
+    rep = publish_pending(cfg, contracts=reg, now=NOW)
+    assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]

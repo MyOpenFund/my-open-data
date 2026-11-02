@@ -227,6 +227,17 @@ def test_duration_row_needs_period_start(tmp_path):
         _write(tmp_path, [fund_row(frequency="annual", period_start=None)])
 
 
+def test_instant_period_mismatches_are_counted(tmp_path):
+    rows = [
+        fund_row(frequency="instant", period_start=date(2024, 7, 1)),
+        fund_row(concept="Revenue", frequency="annual", period_start=None),
+        fund_row(concept="Cash"),
+    ]
+    with pytest.raises(BatchInvalid) as exc:
+        _write(tmp_path, rows)
+    assert "instant_period_mismatch:2" in exc.value.reasons
+
+
 def test_instant_and_duration_rows_conform(tmp_path):
     ref = _write(
         tmp_path,

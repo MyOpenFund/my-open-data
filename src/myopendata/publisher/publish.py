@@ -182,13 +182,34 @@ def _published_columns(con, c: Contract) -> set[str] | None:
     return {r[0] for r in con.execute(f"DESCRIBE {_fq(c)}").fetchall()}
 
 
+def _first_columns(con, c: Contract) -> list[str]:
+    """Column names of the first approved definition of the contract's major.
+
+    The lowest approved version recorded in ref.contracts; columns that later MINORs added are not
+    in it. Falls back to the contract's own columns if the major has no approval row yet.
+    """
+    rows = con.execute(
+        "SELECT version, definition_json FROM lake.ref.contracts WHERE name = ? AND major = ?",
+        [c.name, c.major],
+    ).fetchall()
+    if not rows:
+        return [col.name for col in c.columns]
+    first = min(rows, key=lambda r: _semver(r[0]))
+    return [col[0] for col in json.loads(first[1])["columns"]]
+
+
 def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
     """Row-level idempotence for fact contracts (chantier 8, spec §2).
 
     A row whose (natural_key, known_at) is already published is skipped when an identical row
-    exists (null-safe comparison of every other contract column), and counted as a conflict
-    otherwise: a value cannot change without a later known_at. The lookup is scoped to the
-    batch's entity_ids and partition values, so its cost follows the batch, not the table.
+    exists, and counted as a conflict otherwise: a value cannot change without a later known_at.
+    Values are compared exactly (null-safe), so a producer must re-emit bit-identical values,
+    floats included. Only the columns of the major's first approved definition are compared
+    (intersected with the published table): a column added by a later MINOR never makes a
+    conflict, and enriching an existing row with it needs a later known_at. The lookup is scoped
+    to the batch's values of the natural-key columns among the entity column pair and the
+    partition columns, so its cost follows the batch, not the table, and it depends neither on
+    entity resolution nor on columns outside the key.
     Returns (rows to insert, rows skipped, rows conflicting).
     """
     if c.kind != "fact" or out.num_rows == 0:
@@ -197,8 +218,16 @@ def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
     if have is None:
         return out, 0, 0
     key = [*c.natural_key, "known_at"]
-    compared = [n for n in out.column_names if n not in key and n not in RESERVED and n in have]
-    scoped = (["entity_id"] if c.entity_column_pair else []) + list(c.partition_by)
+    compared = [
+        n
+        for n in _first_columns(con, c)
+        if n not in key and n not in RESERVED and n in have and n in out.column_names
+    ]
+    scoped = [
+        s
+        for s in dict.fromkeys([*(c.entity_column_pair or ()), *c.partition_by])
+        if s in c.natural_key
+    ]
     where = " AND ".join(
         f"EXISTS (SELECT 1 FROM _incoming AS x WHERE x.{s} IS NOT DISTINCT FROM t.{s})"
         for s in scoped
