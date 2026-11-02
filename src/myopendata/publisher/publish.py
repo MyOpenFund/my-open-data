@@ -191,13 +191,18 @@ def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
     batch's entity_ids and partition values, so its cost follows the batch, not the table.
     Returns (rows to insert, rows skipped, rows conflicting).
     """
+    if c.kind != "fact" or out.num_rows == 0:
+        return out, 0, 0
     have = _published_columns(con, c)
-    if c.kind != "fact" or have is None or out.num_rows == 0:
+    if have is None:
         return out, 0, 0
     key = [*c.natural_key, "known_at"]
     compared = [n for n in out.column_names if n not in key and n not in RESERVED and n in have]
     scoped = (["entity_id"] if c.entity_column_pair else []) + list(c.partition_by)
-    where = " AND ".join(f"t.{s} IN (SELECT DISTINCT {s} FROM _incoming)" for s in scoped)
+    where = " AND ".join(
+        f"EXISTS (SELECT 1 FROM _incoming AS x WHERE x.{s} IS NOT DISTINCT FROM t.{s})"
+        for s in scoped
+    )
     same = " AND ".join(f"t.{n} IS NOT DISTINCT FROM i.{n}" for n in compared) or "TRUE"
     on = " AND ".join(f"t.{k} = i.{k}" for k in key)
     con.register("_incoming", out.append_column("_row", pa.array(range(out.num_rows), pa.int64())))

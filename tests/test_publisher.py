@@ -620,11 +620,20 @@ def test_same_key_and_known_at_with_another_value_is_quarantined(approved):
 
 def test_conflict_between_two_batches_of_one_run(approved):
     land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
-    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2))])
-    land(approved, FUNDAMENTALS, [fund_row(value=Decimal(1))], run_id="r1b")
+    ref2 = land(approved, FUNDAMENTALS, [fund_row(value=Decimal(2))])
+    ref1 = land(approved, FUNDAMENTALS, [fund_row(value=Decimal(1))], run_id="r1b")
     rep = publish_pending(approved, now=NOW)
     assert [p["rows"] for p in rep.published if p["contract"] == "fundamentals_v2"] == [1]
+    assert rep.exit_code == 3
+    assert len(rep.quarantined) == 1
     assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
+    (first,) = (p for p in rep.published if p["contract"] == "fundamentals_v2")
+    value = {ref2.batch_id: Decimal(2), ref1.batch_id: Decimal(1)}
+    assert first["batch_id"] in value
+    (other,) = set(value) - {first["batch_id"]}
+    assert rep.quarantined[0]["batch_id"] == other
+    expected = value[first["batch_id"]]
+    assert q(approved, "SELECT value FROM lake.facts.fundamentals_v2") == [(expected,)]
 
 
 def test_a_null_column_compares_equal_to_null(approved):
@@ -636,6 +645,41 @@ def test_a_null_column_compares_equal_to_null(approved):
     )
     rep = publish_pending(approved, now=NOW)
     assert rep.exit_code == 0 and rep.published[0]["rows_skipped"] == 1
+
+
+def test_null_on_one_side_and_a_value_on_the_other_is_a_conflict(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row(original_tag=None)])
+    publish_pending(approved, now=NOW)
+    land(approved, FUNDAMENTALS, [fund_row(original_tag="us-gaap:LongTermDebt")], run_id="r2")
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 3
+    assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
+    assert q(approved, "SELECT original_tag FROM lake.facts.fundamentals_v2") == [(None,)]
+
+
+def test_rows_with_a_null_partition_value_are_still_matched(cfg):
+    nullable_part = dataclasses.replace(FUNDAMENTALS, partition_by=("original_tag",))
+    reg = {(c.name, c.major): c for c in (ENTITY_OBSERVATIONS, nullable_part)}
+    approve_contract(cfg, ENTITY_OBSERVATIONS, "test")
+    approve_contract(cfg, nullable_part, "test")
+    land(cfg, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(cfg, nullable_part, [fund_row(original_tag=None, value=Decimal(2))])
+    publish_pending(cfg, contracts=reg, now=NOW)
+    land(
+        cfg,
+        nullable_part,
+        [fund_row(original_tag=None, value=Decimal(2)), fund_row(concept="Cash")],
+        run_id="r2",
+    )
+    rep = publish_pending(cfg, contracts=reg, now=NOW)
+    assert rep.exit_code == 0, rep.to_json()
+    assert rep.published[0]["rows"] == 1 and rep.published[0]["rows_skipped"] == 1
+    assert q(cfg, "SELECT count(*) FROM lake.facts.fundamentals_v2") == [(2,)]
+    land(cfg, nullable_part, [fund_row(original_tag=None, value=Decimal(1))], run_id="r3")
+    rep = publish_pending(cfg, contracts=reg, now=NOW)
+    assert rep.exit_code == 3
+    assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
 
 
 def test_identity_replay_keeps_attributes(approved):
