@@ -105,6 +105,22 @@ def test_recipe_assembles_as_of(store):
     ]
 
 
+def test_a_recipe_input_can_read_every_vintage(store):
+    latest = Recipe(
+        "n", "1.0.0", {"f": "fundamentals"}, "SELECT count(*) AS n FROM f WHERE source_code = 'sec'"
+    )
+    every = Recipe("n", "1.0.0", {"f": "fundamentals:vintages"}, latest.sql)
+    at = ts("2025-12-01T00:00:00")
+    assert store.assemble(latest, at).to_pylist() == [{"n": 1}]
+    assert store.assemble(every, at).to_pylist() == [{"n": 2}]
+    assert store.assemble(every, ts("2025-09-01T00:00:00")).to_pylist() == [{"n": 1}]
+
+
+def test_a_bad_recipe_input_mode_is_refused(store):
+    with pytest.raises(ValueError, match="bad recipe input"):
+        store.assemble(Recipe("n", "1.0.0", {"f": "fundamentals:other"}, "SELECT 1"))
+
+
 def test_save_true_not_in_v0(store):
     with pytest.raises(NotImplementedError):
         store.assemble(Recipe("x", "1.0.0", {}, "SELECT 1"), save=True)
