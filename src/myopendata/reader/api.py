@@ -2,7 +2,7 @@
 
     store = Store.open(StoreConfig.from_env())
     store.datasets()                                   # what is published, with licence
-    store.read_asof("fundamentals", as_of=t, where="concept = 'LongTermDebt'")  # look-ahead-free
+    store.read_asof("fundamentals", as_of=t, where="original_tag = 'us-gaap:Revenues'")
     store.assemble(recipe, as_of=t)                    # derived dataset (save=False in v0)
     export(table, "out.xlsx")                          # csv | xlsx | parquet by suffix
 

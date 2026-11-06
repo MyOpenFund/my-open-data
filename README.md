@@ -35,9 +35,9 @@ from myopendata.reader import Recipe, Store, export
 store = Store.open()                                   # config from env (or `with Store.open() as store:`)
 store.datasets()                                       # name, major, version, kind, licence, table
 t = store.read_asof("fundamentals", datetime(2025, 12, 1, tzinfo=timezone.utc),
-                    where="concept = 'LongTermDebt'")  # pyarrow.Table, latest known per key
+                    where="original_tag = 'us-gaap:Revenues'")  # pyarrow.Table, latest known per key
 t1 = store.read_asof("fundamentals", filters={"source_code": ["sec"]},
-                     columns=["entity_id", "concept", "value"], limit=100)  # bound, safe for servers
+                     columns=["entity_id", "original_tag", "value"], limit=100)  # bound, safe for servers
 store.describe("fundamentals")                         # columns, docs, natural key, licence
 t0 = store.read_asof("fundamentals", snapshot=42)      # what the store held at DuckLake version 42
 r = Recipe("debt_by_source", "1.0.0", {"f": "fundamentals"},

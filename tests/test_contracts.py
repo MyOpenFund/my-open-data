@@ -11,7 +11,7 @@ from myopendata.contracts.standard import ENTITY_OBSERVATIONS, FUNDAMENTALS
 
 def test_standard_contracts_are_discovered_via_entry_point():
     found = discover_contracts()
-    assert ("fundamentals", 2) in found and ("entity_observations", 1) in found
+    assert ("fundamentals", 3) in found and ("entity_observations", 1) in found
 
 
 @pytest.mark.parametrize("c", [FUNDAMENTALS, ENTITY_OBSERVATIONS])
@@ -97,7 +97,7 @@ def _bad(**kw):
         (_bad(version="1.0.0\n"), "version"),
         (_bad(kind="view"), "kind"),
         (_bad(owner=""), "owner"),
-        (_bad(natural_key=FUNDAMENTALS.natural_key + ("concept",)), "duplicate natural_key"),
+        (_bad(natural_key=FUNDAMENTALS.natural_key + ("original_tag",)), "duplicate natural_key"),
         (_bad(natural_key=FUNDAMENTALS.natural_key + ("confidence",)), "non-nullable"),
         (_bad(partition_by=("nope",)), "partition_by"),
         (_bad(checks=("nope",)), "unknown check"),
@@ -142,8 +142,8 @@ def test_fingerprint_covers_terms_and_layout(change):
 
 
 def test_same_definition_several_patches_keeps_highest():
-    found = discover_contracts([_bad(version="2.0.7")])
-    assert found[("fundamentals", 2)].version == "2.0.7"
+    found = discover_contracts([_bad(version="3.0.7")])
+    assert found[("fundamentals", 3)].version == "3.0.7"
 
 
 def test_identity_dataset_needs_identity_columns():
@@ -187,16 +187,29 @@ def test_bad_env_values_are_clear_errors(monkeypatch, tmp_path, var, value):
         StoreConfig.from_env()
 
 
-def test_fundamentals_v2_shape():
+def test_fundamentals_v3_shape():
     from myopendata.contracts.standard.fundamentals import FREQUENCIES
 
-    assert FUNDAMENTALS.version == "2.0.0" and FUNDAMENTALS.table_name == "fundamentals_v2"
+    assert FUNDAMENTALS.version == "3.0.0" and FUNDAMENTALS.table_name == "fundamentals_v3"
     assert FREQUENCIES == ("annual", "semiannual", "quarterly", "instant")
     assert FUNDAMENTALS.checks == ("ocr_confidence", "instant_period")
     assert "USD/shares" in FUNDAMENTALS.column("unit").doc
+    assert FUNDAMENTALS.natural_key == (
+        "entity_scheme",
+        "entity_value",
+        "original_tag",
+        "valid_date",
+        "frequency",
+        "basis",
+        "source_code",
+    )
+    assert FUNDAMENTALS.column("original_tag").nullable is False
+    assert FUNDAMENTALS.column("filing_ref").nullable is True
+    assert "concept" not in {c.name for c in FUNDAMENTALS.columns}
 
 
-def test_registry_holds_no_fundamentals_v1():
+def test_registry_holds_no_older_fundamentals():
     from myopendata.contracts.registry import discover_contracts
 
-    assert ("fundamentals", 1) not in discover_contracts()
+    found = discover_contracts()
+    assert ("fundamentals", 1) not in found and ("fundamentals", 2) not in found

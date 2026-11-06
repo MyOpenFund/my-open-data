@@ -23,7 +23,7 @@ def test_end_to_end_on_postgres_catalogue(pg_cfg):
         assert s.read_asof("fundamentals").num_rows == 1
     finally:
         s.close()
-    land(pg_cfg, FUNDAMENTALS, [fund_row(), fund_row(concept="Cash")], run_id="r2")
+    land(pg_cfg, FUNDAMENTALS, [fund_row(), fund_row(original_tag="us-gaap:Cash")], run_id="r2")
     rep = publish_pending(pg_cfg, now=NOW)
     assert rep.exit_code == 0 and rep.published[0]["rows_skipped"] == 1, rep.to_json()
     land(pg_cfg, FUNDAMENTALS, [fund_row(value=fund_row()["value"] + 1)], run_id="r3")

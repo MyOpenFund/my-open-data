@@ -72,9 +72,11 @@ result carries `myopendata.as_of` (and snapshot / recipe) in its schema metadata
 * Standard contracts ship with the library (`fundamentals`, `entity_observations`); producers
   declare their own through the `myopendata.contracts` entry-point group (the spec's working name
   was `myopenfund.datasets`).
-* `fundamentals` 2.0.0 (first published major): `frequency` is `quarterly`, `semiannual`,
+* `fundamentals` 2.0.0 (first published major, now superseded by 3.0.0): `frequency` is `quarterly`, `semiannual`,
   `annual` (durations) or `instant` (balance-sheet values, `period_start` null); the row check
   `instant_period` enforces that pairing. v1 was never published and is no longer shipped.
+  3.0.0 keeps facts as filed: the natural key uses `original_tag` (`ns:Tag`, required) in place of
+  the removed `concept` column, and `filing_ref` (nullable) carries the filing's identifier.
 * A contract version is publishable once approved (`myopendata contracts approve NAME MAJOR`).
   A strictly additive MINOR (new nullable columns appended, everything else equal, higher version)
   is auto-approved; any other change within a major is refused (`contract_fingerprint_mismatch`).

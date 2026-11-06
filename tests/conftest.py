@@ -74,7 +74,6 @@ def fund_row(**over):
     base = dict(
         entity_scheme="cik",
         entity_value="0000789019",
-        concept="LongTermDebt",
         original_tag="us-gaap:LongTermDebt",
         period_start=None,
         frequency="instant",
@@ -85,6 +84,7 @@ def fund_row(**over):
         extraction_method="xbrl_filed",
         confidence=None,
         source_page=None,
+        filing_ref="0000789019-25-000001",
         valid_date=date(2025, 6, 30),
         known_at=ts("2025-07-30T20:00:00"),
         known_at_kind="published",

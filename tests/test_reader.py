@@ -58,7 +58,7 @@ def test_two_sources_both_visible(store):
 
 
 def test_where_filter_and_major_suffix(store):
-    t = store.read_asof("fundamentals_v2", ts("2025-12-01T00:00:00"), where="source_code = 'sec'")
+    t = store.read_asof("fundamentals_v3", ts("2025-12-01T00:00:00"), where="source_code = 'sec'")
     assert t.num_rows == 1
 
 
@@ -75,14 +75,19 @@ def test_snapshot_pins_store_state(store, approved):
     land(
         approved,
         FUNDAMENTALS,
-        [fund_row(concept="Revenue", value=Decimal(281724000000))],
+        [fund_row(original_tag="us-gaap:Revenue", value=Decimal(281724000000))],
         run_id="r2",
     )
     assert publish_pending(approved, now=NOW).exit_code == 0
     store = Store.open(approved)
     late = ts("2025-12-01T00:00:00")
-    assert store.read_asof("fundamentals", late, where="concept = 'Revenue'").num_rows == 1
-    pinned = store.read_asof("fundamentals", late, snapshot=before, where="concept = 'Revenue'")
+    assert (
+        store.read_asof("fundamentals", late, where="original_tag = 'us-gaap:Revenue'").num_rows
+        == 1
+    )
+    pinned = store.read_asof(
+        "fundamentals", late, snapshot=before, where="original_tag = 'us-gaap:Revenue'"
+    )
     assert pinned.num_rows == 0
 
 
@@ -107,14 +112,14 @@ def test_save_true_not_in_v0(store):
 
 def test_datasets_lists_published_tables(store):
     names = {d["table"] for d in store.datasets()}
-    assert {"fundamentals_v2", "entity_observations_v1"} <= names
+    assert {"fundamentals_v3", "entity_observations_v1"} <= names
 
 
 def test_reader_is_read_only(store):
     import duckdb
 
     with pytest.raises(duckdb.Error):
-        store.con.execute("DELETE FROM lake.facts.fundamentals_v2")
+        store.con.execute("DELETE FROM lake.facts.fundamentals_v3")
 
 
 @pytest.mark.parametrize("suffix", [".csv", ".xlsx", ".parquet"])
@@ -126,7 +131,7 @@ def test_export(store, tmp_path, suffix):
 
 def test_entity_master_joins(store):
     t = store.con.execute(
-        "SELECT a.name FROM lake.facts.fundamentals_v2 f JOIN lake.ref.entity_attributes a "
+        "SELECT a.name FROM lake.facts.fundamentals_v3 f JOIN lake.ref.entity_attributes a "
         "USING (entity_id) WHERE a.valid_to IS NULL LIMIT 1"
     ).fetchall()
     assert t == [("MICROSOFT CORP",)]
@@ -213,8 +218,8 @@ def test_result_records_its_as_of(store):
 
 def test_datasets_carry_name_version_and_licence(store):
     d = {x["name"]: x for x in store.datasets()}
-    assert d["fundamentals"]["version"] == "2.0.0" and d["fundamentals"]["licence"]
-    assert d["fundamentals"]["table"] == "fundamentals_v2"
+    assert d["fundamentals"]["version"] == "3.0.0" and d["fundamentals"]["licence"]
+    assert d["fundamentals"]["table"] == "fundamentals_v3"
 
 
 def test_xlsx_export_writes_utc_timestamps_and_numbers(store, tmp_path):
@@ -245,9 +250,9 @@ def test_structured_filters_columns_and_limit(store):
         "fundamentals",
         late,
         filters={"source_code": ["sec"]},
-        columns=["concept", "value", "source_code"],
+        columns=["original_tag", "value", "source_code"],
     )
-    assert t.column_names == ["concept", "value", "source_code"] and t.num_rows == 1
+    assert t.column_names == ["original_tag", "value", "source_code"] and t.num_rows == 1
     assert store.read_asof("fundamentals", late, filters={"source_code": "nope"}).num_rows == 0
     assert store.read_asof("fundamentals", late, limit=1).num_rows == 1
 
@@ -262,7 +267,7 @@ def test_filter_values_are_bound_not_interpolated(store):
     [
         {"filters": {"nope": 1}},
         {"columns": ["x; DROP"]},
-        {"filters": {"concept": []}},
+        {"filters": {"original_tag": []}},
         {"limit": -1},
         {"limit": True},
     ],
@@ -277,7 +282,7 @@ def test_describe_carries_columns_docs_and_key(store):
     cols = {c["name"]: c for c in d["columns"]}
     assert d["licence"] and d["doc"].startswith("Reported")
     assert cols["frequency"]["allowed"] == ["annual", "semiannual", "quarterly", "instant"]
-    assert "Normalised concept" in cols["concept"]["doc"]
+    assert "Tag as filed" in cols["original_tag"]["doc"]
     assert d["natural_key"][-1] == "source_code"
 
 
@@ -302,7 +307,7 @@ def test_approved_but_unpublished_minor_columns_are_not_offered(store, approved)
     store.close()
     minor = dataclasses.replace(
         FUNDAMENTALS,
-        version="2.1.0",
+        version="3.1.0",
         columns=FUNDAMENTALS.columns + (Column("segment", pa.string()),),
     )
     approve_contract(approved, minor, "reviewer")

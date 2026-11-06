@@ -26,14 +26,14 @@ def _write(tmp_path, rows, **kw):
 def test_batch_lands_with_manifest(tmp_path):
     ref = _write(tmp_path, [fund_row()], source_inputs=["companyfacts/CIK0000789019.json"])
     m = json.loads((ref.path / "batch.json").read_text())
-    assert ref.created and m["rows"] == 1 and m["contract_version"] == "2.0.0"
-    assert ref.path.parent.name == "fundamentals_v2"
+    assert ref.created and m["rows"] == 1 and m["contract_version"] == "3.0.0"
+    assert ref.path.parent.name == "fundamentals_v3"
     assert not list(tmp_path.glob("*/.tmp-*"))
 
 
 def test_same_rows_in_any_order_give_same_batch(tmp_path):
-    a = _write(tmp_path, [fund_row(), fund_row(concept="Revenue")])
-    b = _write(tmp_path, [fund_row(concept="Revenue"), fund_row()])
+    a = _write(tmp_path, [fund_row(), fund_row(original_tag="us-gaap:Revenue")])
+    b = _write(tmp_path, [fund_row(original_tag="us-gaap:Revenue"), fund_row()])
     assert a.batch_id == b.batch_id and b.created is False
 
 
@@ -137,8 +137,8 @@ def test_non_race_rename_error_is_raised(tmp_path):
 
     t = conform(FUNDAMENTALS, table(FUNDAMENTALS, [fund_row()]), now=NOW)
     bid = batch_id_for(FUNDAMENTALS, content_hash(t))
-    (tmp_path / "fundamentals_v2").mkdir()
-    (tmp_path / "fundamentals_v2" / bid).write_text("not a batch")
+    (tmp_path / "fundamentals_v3").mkdir()
+    (tmp_path / "fundamentals_v3" / bid).write_text("not a batch")
     with pytest.raises(OSError):
         _write(tmp_path, [fund_row()])
     assert not list(tmp_path.glob("*/.tmp-*"))
@@ -161,7 +161,9 @@ def test_manifest_hashes_match_the_file(tmp_path):
 
     from myopendata.writer.batch import content_hash, file_sha256
 
-    ref = _write(tmp_path, [fund_row(), fund_row(concept="Revenue")], source_inputs=["b", "a"])
+    ref = _write(
+        tmp_path, [fund_row(), fund_row(original_tag="us-gaap:Revenue")], source_inputs=["b", "a"]
+    )
     m = json.loads((ref.path / "batch.json").read_text())
     assert m["source_inputs"] == ["a", "b"]
     assert m["files"]["data.parquet"]["sha256"] == file_sha256(ref.path / "data.parquet")
@@ -172,7 +174,9 @@ def test_hash_ignores_chunking_column_order_and_metadata():
     from myopendata.contracts.rules import conform
     from myopendata.writer.batch import content_hash
 
-    t = conform(FUNDAMENTALS, table(FUNDAMENTALS, [fund_row(), fund_row(concept="R")]), now=NOW)
+    t = conform(
+        FUNDAMENTALS, table(FUNDAMENTALS, [fund_row(), fund_row(original_tag="us-gaap:R")]), now=NOW
+    )
     chunked = pa.concat_tables([t.slice(0, 1), t.slice(1)])
     permuted = conform(FUNDAMENTALS, t.select(list(reversed(t.column_names))), now=NOW)
     meta = t.replace_schema_metadata({b"pandas": b"{}"})
@@ -230,8 +234,8 @@ def test_duration_row_needs_period_start(tmp_path):
 def test_instant_period_mismatches_are_counted(tmp_path):
     rows = [
         fund_row(frequency="instant", period_start=date(2024, 7, 1)),
-        fund_row(concept="Revenue", frequency="annual", period_start=None),
-        fund_row(concept="Cash"),
+        fund_row(original_tag="us-gaap:Revenue", frequency="annual", period_start=None),
+        fund_row(original_tag="us-gaap:Cash"),
     ]
     with pytest.raises(BatchInvalid) as exc:
         _write(tmp_path, rows)
@@ -244,13 +248,13 @@ def test_instant_and_duration_rows_conform(tmp_path):
         [
             fund_row(),  # instant balance-sheet fact
             fund_row(
-                concept="Revenue",
+                original_tag="us-gaap:Revenue",
                 frequency="annual",
                 period_start=date(2024, 7, 1),
                 value=Decimal(281724000000),
             ),
             fund_row(
-                concept="EarningsPerShareDiluted",
+                original_tag="us-gaap:EarningsPerShareDiluted",
                 frequency="quarterly",
                 period_start=date(2025, 4, 1),
                 value=Decimal("3.65"),
@@ -258,4 +262,4 @@ def test_instant_and_duration_rows_conform(tmp_path):
             ),
         ],
     )
-    assert ref.rows == 3 and ref.path.parent.name == "fundamentals_v2"
+    assert ref.rows == 3 and ref.path.parent.name == "fundamentals_v3"
