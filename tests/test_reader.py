@@ -315,3 +315,28 @@ def test_approved_but_unpublished_minor_columns_are_not_offered(store, approved)
         assert "segment" not in {c["name"] for c in s.describe("fundamentals")["columns"]}
         with pytest.raises(ValueError, match="unknown column"):
             s.read_asof("fundamentals", columns=["segment"])
+
+
+def test_a_recipe_joins_facts_with_their_statement_position(approved):
+    from conftest import statement_row
+
+    from myopendata.contracts.standard import FILING_STATEMENTS
+    from myopendata.publisher import approve_contract
+
+    approve_contract(approved, FILING_STATEMENTS, "test")
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    land(approved, FILING_STATEMENTS, [statement_row()])
+    assert publish_pending(approved, now=NOW).exit_code == 0
+    with Store.open(approved) as s:
+        rows = s.assemble(
+            Recipe(
+                "placed",
+                "1.0.0",
+                {"f": "fundamentals", "p": "filing_statements"},
+                "SELECT f.original_tag, p.statement FROM f JOIN p "
+                "ON p.filing_ref = f.filing_ref "
+                "AND p.tag = split_part(f.original_tag, ':', 2)",
+            )
+        ).to_pylist()
+    assert rows == [{"original_tag": "us-gaap:LongTermDebt", "statement": "BS"}]

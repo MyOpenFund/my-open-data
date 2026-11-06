@@ -213,3 +213,37 @@ def test_registry_holds_no_older_fundamentals():
 
     found = discover_contracts()
     assert ("fundamentals", 1) not in found and ("fundamentals", 2) not in found
+
+
+def test_filing_statements_shape():
+    from myopendata.contracts.registry import discover_contracts
+    from myopendata.contracts.standard import FILING_STATEMENTS
+
+    assert ("filing_statements", 1) in discover_contracts()
+    assert FILING_STATEMENTS.version == "1.0.0"
+    assert FILING_STATEMENTS.table_name == "filing_statements_v1"
+    assert FILING_STATEMENTS.natural_key == (
+        "entity_scheme",
+        "entity_value",
+        "filing_ref",
+        "statement",
+        "tag",
+        "valid_date",
+        "source_code",
+    )
+    assert FILING_STATEMENTS.column("statement").allowed == ("BS", "IS", "CF")
+    validate_contract(FILING_STATEMENTS)
+
+
+def test_filing_statements_refuses_another_statement_class():
+    from conftest import NOW, statement_row, table
+
+    from myopendata.contracts.rules import BatchInvalid, conform
+    from myopendata.contracts.standard import FILING_STATEMENTS
+
+    with pytest.raises(BatchInvalid):
+        conform(
+            FILING_STATEMENTS,
+            table(FILING_STATEMENTS, [statement_row(statement="EQ")]),
+            now=NOW,
+        )

@@ -16,6 +16,7 @@ def test_contracts_list(capsys):
     assert main(["contracts", "list"]) == 0
     out = capsys.readouterr().out
     assert "fundamentals_v3\t3.0.0" in out and "entity_observations_v1" in out
+    assert "filing_statements_v1" in out
 
 
 def test_approve_then_publish_exit_codes(cfg, monkeypatch, capsys):
