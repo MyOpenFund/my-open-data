@@ -56,14 +56,15 @@ ref = write_batch(contract, table, landing_root=data_root / "landing",
 
 The writer validates the table against its contract and drops an atomic, idempotent batch in
 `landing/`. It never touches Postgres. A producer declares its own contracts through the
-`myopendata.contracts` entry-point group; standard contracts (`fundamentals`, `entity_observations`)
-ship with this library.
+`myopendata.contracts` entry-point group; standard contracts (`fundamentals`, `entity_observations`,
+`filing_statements`) ship with this library.
 
 ## Operator
 
 ```
 myopendata contracts list
-myopendata contracts approve fundamentals 2 --by <name>   # reviewed step; refuses conflicting definitions
+myopendata contracts approve fundamentals 3 --by <name>   # reviewed step; refuses conflicting definitions
+myopendata contracts approve filing_statements 1 --by <name>   # likewise, for a store that publishes it
 myopendata publish                                          # exit 0 ok · 1 fatal · 3 degraded
 ```
 

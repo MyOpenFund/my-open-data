@@ -1,3 +1,5 @@
+"""Standard contract: which tags a filing placed on which primary statement."""
+
 import pyarrow as pa
 
 from myopendata.contracts.base import Column, Contract

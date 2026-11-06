@@ -69,14 +69,15 @@ result carries `myopendata.as_of` (and snapshot / recipe) in its schema metadata
 * Common rules (in `contracts/rules.py`): bitemporal columns, provenance (`source_code`,
   `source_doc_id`), natural key containing `valid_date` and `source_code` and never `known_at`,
   mandatory licence and owner, identifier schemes, reserved columns `entity_id` / `batch_id`.
-* Standard contracts ship with the library (`fundamentals`, `entity_observations`); producers
-  declare their own through the `myopendata.contracts` entry-point group (the spec's working name
-  was `myopenfund.datasets`).
-* `fundamentals` 2.0.0 (first published major, now superseded by 3.0.0): `frequency` is `quarterly`, `semiannual`,
-  `annual` (durations) or `instant` (balance-sheet values, `period_start` null); the row check
-  `instant_period` enforces that pairing. v1 was never published and is no longer shipped.
-  3.0.0 keeps facts as filed: the natural key uses `original_tag` (`ns:Tag`, required) in place of
-  the removed `concept` column, and `filing_ref` (nullable) carries the filing's identifier.
+* Standard contracts ship with the library (`fundamentals`, `entity_observations`,
+  `filing_statements`); producers declare
+  their own through the `myopendata.contracts` entry-point group (the spec's working name was
+  `myopenfund.datasets`).
+* `fundamentals` 3.0.0 (the current major) keeps facts as filed, keyed by tag: the natural key uses
+  `original_tag` (`ns:Tag`, required), and `filing_ref` (nullable) carries the filing's
+  identifier. `frequency` is `quarterly`, `semiannual`, `annual` (durations) or `instant`
+  (balance-sheet values, `period_start` null); the row check `instant_period` enforces that
+  pairing. The earlier majors were never published to production and no longer ship.
 * A contract version is publishable once approved (`myopendata contracts approve NAME MAJOR`).
   A strictly additive MINOR (new nullable columns appended, everything else equal, higher version)
   is auto-approved; any other change within a major is refused (`contract_fingerprint_mismatch`).

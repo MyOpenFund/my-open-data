@@ -6,7 +6,7 @@ import pytest
 from myopendata.contracts.base import Column
 from myopendata.contracts.registry import discover_contracts
 from myopendata.contracts.rules import ContractError, validate_contract
-from myopendata.contracts.standard import ENTITY_OBSERVATIONS, FUNDAMENTALS
+from myopendata.contracts.standard import ENTITY_OBSERVATIONS, FILING_STATEMENTS, FUNDAMENTALS
 
 
 def test_standard_contracts_are_discovered_via_entry_point():
@@ -14,7 +14,7 @@ def test_standard_contracts_are_discovered_via_entry_point():
     assert ("fundamentals", 3) in found and ("entity_observations", 1) in found
 
 
-@pytest.mark.parametrize("c", [FUNDAMENTALS, ENTITY_OBSERVATIONS])
+@pytest.mark.parametrize("c", [FUNDAMENTALS, ENTITY_OBSERVATIONS, FILING_STATEMENTS])
 def test_standard_contracts_pass_common_rules(c):
     validate_contract(c)
 
@@ -232,7 +232,6 @@ def test_filing_statements_shape():
         "source_code",
     )
     assert FILING_STATEMENTS.column("statement").allowed == ("BS", "IS", "CF")
-    validate_contract(FILING_STATEMENTS)
 
 
 def test_filing_statements_refuses_another_statement_class():

@@ -42,8 +42,9 @@ class Recipe:
     """A derived dataset: inputs are read as of one date, then one DuckDB SQL statement.
 
     inputs maps a view name used in sql to a published dataset name (latest major unless
-    "name_vN" is given). "name:vintages" gives every row knowable at the date instead of the
-    latest per key, for a recipe that compares a value with the one it replaced. Example:
+    "name_vN" is given). "name:vintages" (or "name_vN:vintages") gives every row knowable at the
+    date instead of the latest per key, for a recipe that compares a value with the one it
+    replaced. Example:
     Recipe("leverage", "1.0.0", {"f": "fundamentals"}, "SELECT ...").
     """
 

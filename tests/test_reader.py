@@ -117,7 +117,7 @@ def test_a_recipe_input_can_read_every_vintage(store):
 
 
 def test_a_bad_recipe_input_mode_is_refused(store):
-    with pytest.raises(ValueError, match="bad recipe input"):
+    with pytest.raises(ValueError, match="bad recipe input 'fundamentals:other'"):
         store.assemble(Recipe("n", "1.0.0", {"f": "fundamentals:other"}, "SELECT 1"))
 
 
