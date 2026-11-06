@@ -35,9 +35,9 @@ from myopendata.reader import Recipe, Store, export
 store = Store.open()                                   # config from env (or `with Store.open() as store:`)
 store.datasets()                                       # name, major, version, kind, licence, table
 t = store.read_asof("fundamentals", datetime(2025, 12, 1, tzinfo=timezone.utc),
-                    where="concept = 'LongTermDebt'")  # pyarrow.Table, latest known per key
+                    where="original_tag = 'us-gaap:Revenues'")  # pyarrow.Table, latest known per key
 t1 = store.read_asof("fundamentals", filters={"source_code": ["sec"]},
-                     columns=["entity_id", "concept", "value"], limit=100)  # bound, safe for servers
+                     columns=["entity_id", "original_tag", "value"], limit=100)  # bound, safe for servers
 store.describe("fundamentals")                         # columns, docs, natural key, licence
 t0 = store.read_asof("fundamentals", snapshot=42)      # what the store held at DuckLake version 42
 r = Recipe("debt_by_source", "1.0.0", {"f": "fundamentals"},
@@ -56,14 +56,15 @@ ref = write_batch(contract, table, landing_root=data_root / "landing",
 
 The writer validates the table against its contract and drops an atomic, idempotent batch in
 `landing/`. It never touches Postgres. A producer declares its own contracts through the
-`myopendata.contracts` entry-point group; standard contracts (`fundamentals`, `entity_observations`)
-ship with this library.
+`myopendata.contracts` entry-point group; standard contracts (`fundamentals`, `entity_observations`,
+`filing_statements`) ship with this library.
 
 ## Operator
 
 ```
 myopendata contracts list
-myopendata contracts approve fundamentals 2 --by <name>   # reviewed step; refuses conflicting definitions
+myopendata contracts approve fundamentals 3 --by <name>   # reviewed step; refuses conflicting definitions
+myopendata contracts approve filing_statements 1 --by <name>   # likewise, for a store that publishes it
 myopendata publish                                          # exit 0 ok · 1 fatal · 3 degraded
 ```
 

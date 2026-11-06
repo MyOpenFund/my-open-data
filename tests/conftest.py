@@ -74,7 +74,6 @@ def fund_row(**over):
     base = dict(
         entity_scheme="cik",
         entity_value="0000789019",
-        concept="LongTermDebt",
         original_tag="us-gaap:LongTermDebt",
         period_start=None,
         frequency="instant",
@@ -85,6 +84,7 @@ def fund_row(**over):
         extraction_method="xbrl_filed",
         confidence=None,
         source_page=None,
+        filing_ref="0000789019-25-000001",
         valid_date=date(2025, 6, 30),
         known_at=ts("2025-07-30T20:00:00"),
         known_at_kind="published",
@@ -97,3 +97,22 @@ def fund_row(**over):
 
 def table(contract, rows):
     return pa.Table.from_pylist(rows, schema=contract.schema)
+
+
+def statement_row(**over):
+    base = dict(
+        entity_scheme="cik",
+        entity_value="0000789019",
+        filing_ref="0000789019-25-000001",
+        statement="BS",
+        tag="LongTermDebt",
+        tag_version="us-gaap/2024",
+        plabel="Long-term debt",
+        valid_date=date(2025, 6, 30),
+        known_at=ts("2025-07-30T20:00:00"),
+        known_at_kind="published",
+        source_code="sec",
+        source_doc_id="doc-10k-2025",
+    )
+    base.update(over)
+    return base

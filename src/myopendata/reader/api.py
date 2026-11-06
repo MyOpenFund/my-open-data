@@ -2,7 +2,7 @@
 
     store = Store.open(StoreConfig.from_env())
     store.datasets()                                   # what is published, with licence
-    store.read_asof("fundamentals", as_of=t, where="concept = 'LongTermDebt'")  # look-ahead-free
+    store.read_asof("fundamentals", as_of=t, where="original_tag = 'us-gaap:Revenues'")
     store.assemble(recipe, as_of=t)                    # derived dataset (save=False in v0)
     export(table, "out.xlsx")                          # csv | xlsx | parquet by suffix
 
@@ -42,7 +42,10 @@ class Recipe:
     """A derived dataset: inputs are read as of one date, then one DuckDB SQL statement.
 
     inputs maps a view name used in sql to a published dataset name (latest major unless
-    "name_vN" is given). Example: Recipe("leverage", "1.0.0", {"f": "fundamentals"}, "SELECT ...").
+    "name_vN" is given). "name:vintages" (or "name_vN:vintages") gives every row knowable at the
+    date instead of the latest per key, for a recipe that compares a value with the one it
+    replaced. Example:
+    Recipe("leverage", "1.0.0", {"f": "fundamentals"}, "SELECT ...").
     """
 
     name: str
@@ -202,11 +205,17 @@ class Store:
         return reg[(dataset, max(majors))]
 
     def asof_sql(
-        self, dataset: str, as_of: datetime | None = None, *, snapshot: int | None = None
+        self,
+        dataset: str,
+        as_of: datetime | None = None,
+        *,
+        snapshot: int | None = None,
+        vintages: bool = False,
     ) -> str:
         """SQL for the dataset as it was knowable at as_of: per natural key, the latest row
-        with known_at <= as_of (ties: the batch published last). snapshot pins a DuckLake
-        version (audit: what the store held)."""
+        with known_at <= as_of (ties: the batch published last). vintages=True keeps one row per
+        natural key and known_at instead. snapshot pins a DuckLake version (audit: what the store
+        held)."""
         d = self._dataset(dataset)
         as_of = as_of or datetime.now(UTC)
         if as_of.tzinfo is None:
@@ -214,7 +223,7 @@ class Store:
         if snapshot is not None and (isinstance(snapshot, bool) or not isinstance(snapshot, int)):
             raise ValueError("snapshot must be an int DuckLake version")
         at = f" AT (VERSION => {snapshot})" if snapshot is not None else ""
-        key = ", ".join(f"f.{k}" for k in d.natural_key)
+        key = ", ".join(f"f.{k}" for k in (*d.natural_key, *(("known_at",) if vintages else ())))
         ts = as_of.astimezone(UTC).isoformat()
         return (
             f"SELECT * EXCLUDE (_rn) FROM (SELECT f.*, row_number() OVER (PARTITION BY {key} "
@@ -289,7 +298,11 @@ class Store:
             for view, dataset in recipe.inputs.items():
                 if not VIEW_RE.fullmatch(view) or view in RESERVED_VIEW_NAMES:
                     raise ValueError(f"bad recipe input name {view!r}")
-                con.execute(f"CREATE TEMP VIEW {view} AS {self.asof_sql(dataset, as_of)}")
+                name, sep, mode = dataset.partition(":")
+                if sep and mode != "vintages":
+                    raise ValueError(f"bad recipe input {dataset!r}")
+                sql = self.asof_sql(name, as_of, vintages=bool(sep))
+                con.execute(f"CREATE TEMP VIEW {view} AS {sql}")
             t = con.sql(recipe.sql).to_arrow_table()
         finally:
             con.close()

@@ -13,23 +13,26 @@ BASES = ("consolidated", "parent")
 
 FUNDAMENTALS = Contract(
     name="fundamentals",
-    version="2.0.0",
+    version="3.0.0",
     kind="fact",
     owner="my-open-data",
     licence="per-source; see source_code",
     doc=(
-        "Reported (filed) financial facts, one row per entity/concept/period/basis/source. "
+        "Reported (filed) financial facts as filed, one row per entity/tag/period/basis/source. "
+        "Which tag answers which concept is a versioned reader recipe, never a column here. "
         "Multi-source by design (spec v3 §8): two sources that disagree are two rows; "
-        "a restatement "
-        "is the same key with a later known_at. Computed metrics are recipes, never rows here."
+        "a restatement is the same key with a later known_at. "
+        "Computed metrics are recipes, never rows here."
     ),
     columns=(
         Column("entity_scheme", pa.string(), nullable=False, allowed=ID_SCHEMES),
         Column("entity_value", pa.string(), nullable=False),
         Column(
-            "concept", pa.string(), nullable=False, doc="Normalised concept (us-gaap/ifrs mapping)."
+            "original_tag",
+            pa.string(),
+            nullable=False,
+            doc="Tag as filed, 'namespace:Tag' (us-gaap:Revenues).",
         ),
-        Column("original_tag", pa.string(), doc="Tag or label as filed."),
         Column(
             "period_start",
             pa.date32(),
@@ -54,12 +57,17 @@ FUNDAMENTALS = Contract(
         Column("extraction_method", pa.string(), nullable=False, allowed=EXTRACTION_METHODS),
         Column("confidence", pa.float64(), doc="0..1; required when extraction_method = ocr."),
         Column("source_page", pa.int32(), doc="Page in source_doc_id (OCR)."),
+        Column(
+            "filing_ref",
+            pa.string(),
+            doc="The filing's identifier at its source (SEC accession), as filed.",
+        ),
         *BITEMPORAL_COLUMNS,
     ),
     natural_key=(
         "entity_scheme",
         "entity_value",
-        "concept",
+        "original_tag",
         "valid_date",
         "frequency",
         "basis",

@@ -6,15 +6,15 @@ import pytest
 from myopendata.contracts.base import Column
 from myopendata.contracts.registry import discover_contracts
 from myopendata.contracts.rules import ContractError, validate_contract
-from myopendata.contracts.standard import ENTITY_OBSERVATIONS, FUNDAMENTALS
+from myopendata.contracts.standard import ENTITY_OBSERVATIONS, FILING_STATEMENTS, FUNDAMENTALS
 
 
 def test_standard_contracts_are_discovered_via_entry_point():
     found = discover_contracts()
-    assert ("fundamentals", 2) in found and ("entity_observations", 1) in found
+    assert ("fundamentals", 3) in found and ("entity_observations", 1) in found
 
 
-@pytest.mark.parametrize("c", [FUNDAMENTALS, ENTITY_OBSERVATIONS])
+@pytest.mark.parametrize("c", [FUNDAMENTALS, ENTITY_OBSERVATIONS, FILING_STATEMENTS])
 def test_standard_contracts_pass_common_rules(c):
     validate_contract(c)
 
@@ -97,7 +97,7 @@ def _bad(**kw):
         (_bad(version="1.0.0\n"), "version"),
         (_bad(kind="view"), "kind"),
         (_bad(owner=""), "owner"),
-        (_bad(natural_key=FUNDAMENTALS.natural_key + ("concept",)), "duplicate natural_key"),
+        (_bad(natural_key=FUNDAMENTALS.natural_key + ("original_tag",)), "duplicate natural_key"),
         (_bad(natural_key=FUNDAMENTALS.natural_key + ("confidence",)), "non-nullable"),
         (_bad(partition_by=("nope",)), "partition_by"),
         (_bad(checks=("nope",)), "unknown check"),
@@ -142,8 +142,8 @@ def test_fingerprint_covers_terms_and_layout(change):
 
 
 def test_same_definition_several_patches_keeps_highest():
-    found = discover_contracts([_bad(version="2.0.7")])
-    assert found[("fundamentals", 2)].version == "2.0.7"
+    found = discover_contracts([_bad(version="3.0.7")])
+    assert found[("fundamentals", 3)].version == "3.0.7"
 
 
 def test_identity_dataset_needs_identity_columns():
@@ -187,16 +187,62 @@ def test_bad_env_values_are_clear_errors(monkeypatch, tmp_path, var, value):
         StoreConfig.from_env()
 
 
-def test_fundamentals_v2_shape():
+def test_fundamentals_v3_shape():
     from myopendata.contracts.standard.fundamentals import FREQUENCIES
 
-    assert FUNDAMENTALS.version == "2.0.0" and FUNDAMENTALS.table_name == "fundamentals_v2"
+    assert FUNDAMENTALS.version == "3.0.0" and FUNDAMENTALS.table_name == "fundamentals_v3"
     assert FREQUENCIES == ("annual", "semiannual", "quarterly", "instant")
     assert FUNDAMENTALS.checks == ("ocr_confidence", "instant_period")
     assert "USD/shares" in FUNDAMENTALS.column("unit").doc
+    assert FUNDAMENTALS.natural_key == (
+        "entity_scheme",
+        "entity_value",
+        "original_tag",
+        "valid_date",
+        "frequency",
+        "basis",
+        "source_code",
+    )
+    assert FUNDAMENTALS.column("original_tag").nullable is False
+    assert FUNDAMENTALS.column("filing_ref").nullable is True
+    assert "concept" not in {c.name for c in FUNDAMENTALS.columns}
 
 
-def test_registry_holds_no_fundamentals_v1():
+def test_registry_holds_no_older_fundamentals():
     from myopendata.contracts.registry import discover_contracts
 
-    assert ("fundamentals", 1) not in discover_contracts()
+    found = discover_contracts()
+    assert ("fundamentals", 1) not in found and ("fundamentals", 2) not in found
+
+
+def test_filing_statements_shape():
+    from myopendata.contracts.registry import discover_contracts
+    from myopendata.contracts.standard import FILING_STATEMENTS
+
+    assert ("filing_statements", 1) in discover_contracts()
+    assert FILING_STATEMENTS.version == "1.0.0"
+    assert FILING_STATEMENTS.table_name == "filing_statements_v1"
+    assert FILING_STATEMENTS.natural_key == (
+        "entity_scheme",
+        "entity_value",
+        "filing_ref",
+        "statement",
+        "tag",
+        "valid_date",
+        "source_code",
+    )
+    assert FILING_STATEMENTS.column("statement").allowed == ("BS", "IS", "CF")
+
+
+def test_filing_statements_refuses_another_statement_class():
+    from conftest import NOW, statement_row, table
+
+    from myopendata.contracts.rules import BatchInvalid, conform
+    from myopendata.contracts.standard import FILING_STATEMENTS
+
+    with pytest.raises(BatchInvalid):
+        conform(
+            FILING_STATEMENTS,
+            table(FILING_STATEMENTS, [statement_row(statement="EQ")]),
+            now=NOW,
+        )

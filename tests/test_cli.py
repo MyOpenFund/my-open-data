@@ -15,7 +15,8 @@ def _env(monkeypatch, cfg):
 def test_contracts_list(capsys):
     assert main(["contracts", "list"]) == 0
     out = capsys.readouterr().out
-    assert "fundamentals_v2\t2.0.0" in out and "entity_observations_v1" in out
+    assert "fundamentals_v3\t3.0.0" in out and "entity_observations_v1" in out
+    assert "filing_statements_v1" in out
 
 
 def test_approve_then_publish_exit_codes(cfg, monkeypatch, capsys):
@@ -43,6 +44,6 @@ def test_missing_env_is_a_clean_error(monkeypatch, capsys):
 
 def test_reapproval_is_reported_as_noop(cfg, monkeypatch, capsys):
     _env(monkeypatch, cfg)
-    assert main(["contracts", "approve", "fundamentals", "2", "--by", "x"]) == 0
-    assert main(["contracts", "approve", "fundamentals", "2", "--by", "x"]) == 0
+    assert main(["contracts", "approve", "fundamentals", "3", "--by", "x"]) == 0
+    assert main(["contracts", "approve", "fundamentals", "3", "--by", "x"]) == 0
     assert "already_approved" in capsys.readouterr().out
