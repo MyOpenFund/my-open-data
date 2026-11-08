@@ -25,6 +25,37 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
-      - run: ruff check src tests && ruff format --check src tests
+      - run: ruff check src tests deploy && ruff format --check src tests deploy
+      - run: docker compose -f deploy/nas/compose.yaml --env-file deploy/nas/.env.example config -q
       - run: pytest -q -W error
       - run: python -m build && twine check --strict dist/*
+
+  stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: the stack starts from nothing, creates its roles and dumps its catalogue
+        run: |
+          mkdir -p "$RUNNER_TEMP/mod/data" "$RUNNER_TEMP/mod/pg"
+          cat > "$RUNNER_TEMP/mod/.env" <<EOF
+          # this job never runs install or publish: the value only has to be set
+          MYOPENDATA_REF=${GITHUB_SHA}
+          MYOPENDATA_HOST_DIR=$RUNNER_TEMP/mod/data
+          MYOPENDATA_UID_GID=$(id -u):$(id -g)
+          MYOPENDATA_PG_DATA_DIR=$RUNNER_TEMP/mod/pg
+          MYOPENDATA_PG_BIND=127.0.0.1:5433
+          MYOPENDATA_CATALOG_DB=lake_catalog
+          MYOPENDATA_ADMIN_PASSWORD=ci-admin
+          MYOPENDATA_PUBLISHER_PASSWORD=ci-publisher
+          MYOPENDATA_READER_PASSWORD=ci-reader
+          MYOPENDATA_APPROVE=
+          MYOPENDATA_APPROVED_BY=
+          EOF
+          dc="docker compose -f deploy/nas/compose.yaml --env-file $RUNNER_TEMP/mod/.env"
+          $dc up -d --wait catalog
+          $dc run --rm backup
+          $dc run --rm init
+          test -s "$(ls "$RUNNER_TEMP"/mod/data/backups/lake_catalog-*.dump | head -n 1)"
+          docker run --rm --network host -e PGPASSWORD=ci-reader postgres:16 \
+            psql -h 127.0.0.1 -p 5433 -U lake_reader -d lake_catalog -Atc "SELECT 1"
+          $dc down -v

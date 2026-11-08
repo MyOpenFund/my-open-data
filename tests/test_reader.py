@@ -356,3 +356,39 @@ def test_a_recipe_joins_facts_with_their_statement_position(approved):
             )
         ).to_pylist()
     assert rows == [{"original_tag": "us-gaap:LongTermDebt", "statement": "BS"}]
+
+
+def test_reader_reads_files_seen_under_another_path(approved, tmp_path):
+    """A NAS publisher writes under /data; a Mac reader sees the same files under a share."""
+    import shutil
+
+    from myopendata.config import StoreConfig
+
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    assert publish_pending(approved, now=NOW).exit_code == 0
+    moved = tmp_path / "seen-elsewhere"
+    shutil.move(approved.data_root, moved)
+    s = Store.open(StoreConfig(data_root=moved, catalog=approved.catalog))
+    try:
+        assert s.read_asof("fundamentals").num_rows == 1
+    finally:
+        s.close()
+
+
+def test_writer_whose_data_root_moved_fails(approved, tmp_path):
+    """Only readers override the data path; a writer at the wrong path must not split the lake."""
+    import shutil
+
+    import duckdb
+
+    from myopendata.config import StoreConfig
+    from myopendata.lake import connect
+
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    assert publish_pending(approved, now=NOW).exit_code == 0
+    moved = tmp_path / "seen-elsewhere"
+    shutil.move(approved.data_root, moved)
+    with pytest.raises(duckdb.Error, match="does not match"):
+        connect(StoreConfig(data_root=moved, catalog=approved.catalog), read_only=False)

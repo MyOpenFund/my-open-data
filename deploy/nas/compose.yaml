@@ -1,0 +1,147 @@
+# my-open-data store as one self-contained stack (Docker Compose / Dockge). Every value comes from
+# .env (see .env.example); no secret in this file.
+#   catalog  Postgres for the DuckLake catalogue; always on, port MYOPENDATA_PG_BIND only
+#   init     creates the roles and the database (idempotent; same SQL as roles.sql)
+#   install  pip my-open-data at MYOPENDATA_REF into a volume
+#   backup   pg_dump of the catalogue into <host dir>/backups/ (publish never runs without it)
+#   publish  optional contract approvals (MYOPENDATA_APPROVE), then `myopendata publish`
+# Starting the stack runs init, install, backup and publish once each; start it again to publish
+# again.
+services:
+  catalog:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${MYOPENDATA_ADMIN_PASSWORD:?set}
+    volumes:
+      - ${MYOPENDATA_PG_DATA_DIR:?set}:/var/lib/postgresql/data
+    ports:
+      - ${MYOPENDATA_PG_BIND:?set}:5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  init:
+    image: postgres:16
+    restart: "no"
+    depends_on:
+      catalog:
+        condition: service_healthy
+    environment:
+      PGHOST: catalog
+      PGUSER: postgres
+      PGPASSWORD: ${MYOPENDATA_ADMIN_PASSWORD:?set}
+      DB: ${MYOPENDATA_CATALOG_DB:?set}
+      PUB: ${MYOPENDATA_PUBLISHER_PASSWORD:?set}
+      READ: ${MYOPENDATA_READER_PASSWORD:?set}
+    command:
+      - sh
+      - -c
+      - |
+        psql -X -d postgres <<'SQL'
+        \getenv db DB
+        \getenv publisher_password PUB
+        \getenv reader_password READ
+        -- BEGIN roles.sql
+        \set ON_ERROR_STOP on
+        SELECT format('CREATE ROLE lake_publisher LOGIN PASSWORD %L', :'publisher_password')
+        WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'lake_publisher') \gexec
+        SELECT format('CREATE ROLE lake_reader LOGIN PASSWORD %L', :'reader_password')
+        WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'lake_reader') \gexec
+        SELECT format('CREATE DATABASE %I OWNER lake_publisher', :'db')
+        WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') \gexec
+        REVOKE ALL ON DATABASE :"db" FROM PUBLIC;
+        GRANT CONNECT ON DATABASE :"db" TO lake_publisher, lake_reader;
+        \connect :"db"
+        REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+        GRANT USAGE ON SCHEMA public TO lake_reader;
+        GRANT SELECT ON ALL TABLES IN SCHEMA public TO lake_reader;
+        ALTER DEFAULT PRIVILEGES FOR ROLE lake_publisher IN SCHEMA public
+            GRANT SELECT ON TABLES TO lake_reader;
+        -- END roles.sql
+        SQL
+
+  install:
+    image: python:3.12-slim
+    restart: "no"
+    volumes:
+      - venv:/opt/venv
+    command:
+      - sh
+      - -c
+      - >-
+        apt-get update -qq &&
+        apt-get install -y -qq --no-install-recommends git &&
+        python -m venv --clear /opt/venv &&
+        /opt/venv/bin/pip install -q --no-cache-dir
+        "my-open-data[publisher] @ git+https://github.com/MyOpenFund/my-open-data@${MYOPENDATA_REF:?set}" &&
+        /opt/venv/bin/myopendata contracts list
+
+  backup:
+    image: postgres:16
+    restart: "no"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    user: ${MYOPENDATA_UID_GID:?set}
+    environment:
+      PGHOST: catalog
+      PGUSER: lake_publisher
+      PGPASSWORD: ${MYOPENDATA_PUBLISHER_PASSWORD:?set}
+      PGDATABASE: ${MYOPENDATA_CATALOG_DB:?set}
+    volumes:
+      - ${MYOPENDATA_HOST_DIR:?set}:/data
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /data/backups &&
+        f="/data/backups/$$PGDATABASE-$$(date -u +%Y%m%dT%H%M%SZ).dump" &&
+        { pg_dump -Fc -f "$$f.part" || { rm -f "$$f.part"; exit 1; }; } &&
+        mv "$$f.part" "$$f" && ls -l "$$f"
+
+  publish:
+    image: python:3.12-slim
+    restart: "no"
+    depends_on:
+      install:
+        condition: service_completed_successfully
+      backup:
+        condition: service_completed_successfully
+    user: ${MYOPENDATA_UID_GID:?set}
+    read_only: true
+    working_dir: /tmp
+    # Docker mounts tmpfs noexec by default; DuckDB loads the ducklake and postgres extensions from
+    # $HOME/.duckdb (under /tmp) and downloads them at each start, so /tmp must allow exec.
+    tmpfs:
+      - /tmp:exec
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - venv:/opt/venv:ro
+      - ${MYOPENDATA_HOST_DIR:?set}:/data
+    environment:
+      HOME: /tmp
+      PYTHONUNBUFFERED: "1"
+      MYOPENDATA_DATA_ROOT: /data
+      MYOPENDATA_CATALOG: "postgres:dbname=${MYOPENDATA_CATALOG_DB:?set} host=catalog user=lake_publisher password=${MYOPENDATA_PUBLISHER_PASSWORD:?set}"
+      MYOPENDATA_APPROVE: ${MYOPENDATA_APPROVE:-}
+      MYOPENDATA_APPROVED_BY: ${MYOPENDATA_APPROVED_BY:-}
+    command:
+      - sh
+      - -c
+      - >-
+        if [ -n "$$MYOPENDATA_APPROVE" ] && [ -z "$$MYOPENDATA_APPROVED_BY" ]; then
+        echo "MYOPENDATA_APPROVE needs MYOPENDATA_APPROVED_BY" >&2; exit 2; fi;
+        for c in $$MYOPENDATA_APPROVE; do
+        /opt/venv/bin/myopendata contracts approve "$${c%%:*}" "$${c##*:}"
+        --by "$$MYOPENDATA_APPROVED_BY" || exit 1;
+        done;
+        exec /opt/venv/bin/myopendata publish
+
+volumes:
+  venv:
