@@ -64,6 +64,10 @@ later `known_at`. (The reader still orders ties by publication time, for rows pu
 this rule.) DuckLake snapshots are the audit trail: `read_asof(..., snapshot=n)` shows what the store held at version `n`. Every
 result carries `myopendata.as_of` (and snapshot / recipe) in its schema metadata.
 
+A recipe input named `name:vintages` (or `name_vN:vintages`) gets every row knowable at the date
+instead of the latest per key, for a recipe that compares a value with the one it replaced
+(restatements).
+
 ## Contracts
 
 * Common rules (in `contracts/rules.py`): bitemporal columns, provenance (`source_code`,
@@ -78,6 +82,10 @@ result carries `myopendata.as_of` (and snapshot / recipe) in its schema metadata
   identifier. `frequency` is `quarterly`, `semiannual`, `annual` (durations) or `instant`
   (balance-sheet values, `period_start` null); the row check `instant_period` enforces that
   pairing. The earlier majors were never published to production and no longer ship.
+* `filing_statements` 1.0.0 records which tag a filing placed on which primary statement
+  (`BS`, `IS`, `CF`), one row per tag per statement per filing, keyed by entity, `filing_ref`,
+  `statement`, `tag`, `valid_date` and `source_code`; a tag of that filing absent here was filed in the notes
+  only. `known_at` is the filing's own.
 * A contract version is publishable once approved (`myopendata contracts approve NAME MAJOR`).
   A strictly additive MINOR (new nullable columns appended, everything else equal, higher version)
   is auto-approved; any other change within a major is refused (`contract_fingerprint_mismatch`).
