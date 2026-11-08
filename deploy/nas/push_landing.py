@@ -7,10 +7,13 @@ DEST/<table>/<batch_id> on the share, so the publisher never sees half a batch. 
 already holds, pending or moved by the publisher (_published, _duplicates, _quarantine, with or
 without a "-<run_id>" suffix), is not copied again. The publisher re-checks every file's sha256,
 so a batch damaged in transit is quarantined, never published. Standard library only.
+Run one pusher at a time: a concurrent push of the same batch is not supported (at worst the
+publisher quarantines a mangled copy on its sha256 check).
 
     python push_landing.py SRC_LANDING DEST_LANDING [--dry-run]
 
-Exit code 0, or 1 when a source batch has no batch.json (incomplete; not copied).
+Exit code 0; 1 when a source batch has no batch.json (incomplete; not copied); 2 when DEST_LANDING
+is not an existing directory.
 """
 
 from __future__ import annotations
@@ -56,6 +59,8 @@ def known_on_dest(dest: Path, table: str, name: str) -> bool:
 
 
 def push(src: Path, dest: Path, *, dry_run: bool = False) -> PushReport:
+    if not dest.is_dir():
+        raise FileNotFoundError(f"destination landing is not a directory: {dest}")
     rep = PushReport()
     for batch in finished_batches(src):
         table, name = batch.parent.name, batch.name
@@ -74,7 +79,11 @@ def push(src: Path, dest: Path, *, dry_run: bool = False) -> PushReport:
             shutil.rmtree(tmp)  # left by a push that crashed; only this script uses the prefix
         tmp.parent.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.copytree(batch, tmp)
+            tmp.mkdir()
+            for f in sorted(batch.iterdir()):
+                if f.is_file():
+                    # contents only: SMB shares reject chmod, utime, flags and xattrs
+                    shutil.copyfile(f, tmp / f.name)
             tmp.rename(dest / table / name)
         except BaseException:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -89,7 +98,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("dest", type=Path, help="remote landing zone, e.g. on an SMB mount")
     p.add_argument("--dry-run", action="store_true", help="list what would be copied")
     a = p.parse_args(argv)
-    rep = push(a.src, a.dest, dry_run=a.dry_run)
+    try:
+        rep = push(a.src, a.dest, dry_run=a.dry_run)
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     verb = "would copy" if a.dry_run else "copied"
     print(
         f"{verb} {len(rep.copied)} · already there {len(rep.already_there)} · "

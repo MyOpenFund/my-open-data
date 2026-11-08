@@ -1,7 +1,6 @@
 """deploy/nas/push_landing.py: local landing -> NAS landing, one atomic rename per batch."""
 
 import importlib.util
-import shutil
 import sys
 from pathlib import Path
 
@@ -30,6 +29,7 @@ def nas(tmp_path):
     cfg = StoreConfig(data_root=tmp_path / "nas", catalog=str(tmp_path / "nas.ducklake"))
     approve_contract(cfg, ENTITY_OBSERVATIONS, "test")
     approve_contract(cfg, FUNDAMENTALS, "test")
+    cfg.landing.mkdir(parents=True, exist_ok=True)
     return cfg
 
 
@@ -78,18 +78,17 @@ def test_dry_run_lists_but_copies_nothing(local, nas):
     land(local, FUNDAMENTALS, [fund_row()])
     rep = pl.push(local.landing, nas.landing, dry_run=True)
     assert len(rep.copied) == 1
-    assert not nas.landing.exists() or not any(nas.landing.rglob("batch.json"))
+    assert not any(nas.landing.rglob("batch.json"))
 
 
 def test_failed_copy_leaves_neither_temp_nor_batch(local, nas, monkeypatch):
     ref = land(local, FUNDAMENTALS, [fund_row()])
 
-    def broken_copytree(src, dst):
-        Path(dst).mkdir(parents=True)
-        (Path(dst) / "data.parquet").write_bytes(b"half")
+    def broken_copyfile(src, dst):
+        Path(dst).write_bytes(b"half")
         raise OSError("share went away")
 
-    monkeypatch.setattr(pl.shutil, "copytree", broken_copytree)
+    monkeypatch.setattr(pl.shutil, "copyfile", broken_copyfile)
     with pytest.raises(OSError):
         pl.push(local.landing, nas.landing)
     table_dir = nas.landing / ref.path.parent.name
@@ -125,6 +124,18 @@ def test_pushed_batches_publish_on_the_other_side(local, nas):
 
 
 def test_missing_source_is_an_empty_push(tmp_path):
-    rep = pl.push(tmp_path / "nothing", tmp_path / "dest")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    rep = pl.push(tmp_path / "nothing", dest)
     assert (rep.copied, rep.already_there, rep.incomplete) == ([], [], [])
-    assert shutil.disk_usage(tmp_path)  # tmp_path untouched, no exception
+    assert list(dest.iterdir()) == []
+
+
+def test_missing_destination_is_refused(local, tmp_path, capsys):
+    land(local, FUNDAMENTALS, [fund_row()])
+    gone = tmp_path / "unmounted" / "landing"  # e.g. an SMB share that is not mounted
+    with pytest.raises(FileNotFoundError):
+        pl.push(local.landing, gone)
+    assert pl.main([str(local.landing), str(gone)]) == 2
+    assert "not a directory" in capsys.readouterr().err
+    assert not gone.parent.exists()
