@@ -136,6 +136,11 @@ names are checked against the dataset, values are bound as query parameters. `de
 returns the columns with types, vocabularies and documentation, the natural key and the licence.
 Never forward free text into `where` or a recipe.
 
+A reader may see the lake's files under another path than the publisher (a publisher on a
+server, a reader on a mounted share): set its `MYOPENDATA_DATA_ROOT` to where it sees them. Read-only
+sessions attach with DuckLake's `OVERRIDE_DATA_PATH`; the publisher never does, so a misconfigured
+publisher fails instead of writing files elsewhere.
+
 ## CI
 
 `push` runs on every branch so a branch is tested before its PR exists; `pull_request` runs on

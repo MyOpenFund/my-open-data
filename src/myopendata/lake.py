@@ -37,7 +37,11 @@ def connect(cfg: StoreConfig, *, read_only: bool) -> duckdb.DuckDBPyConnection:
     data_path = cfg.lake_data.as_posix().replace("'", "''")
     opts = [f"DATA_PATH '{data_path}/'"]
     if read_only:
-        opts.append("READ_ONLY")
+        # A reader may see the files under another path than the publisher did (a NAS
+        # publisher, a reader on a mounted share). DuckLake records data files relative to its
+        # data path, so a read-only session may point elsewhere; the catalogue keeps its own
+        # path. A writer never overrides: a wrong data path must fail, not split the lake.
+        opts += ["READ_ONLY", "OVERRIDE_DATA_PATH true"]
     else:
         cfg.lake_data.mkdir(parents=True, exist_ok=True)
         opts.append(f"DATA_INLINING_ROW_LIMIT {int(cfg.data_inlining_row_limit)}")
