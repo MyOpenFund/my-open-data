@@ -38,6 +38,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/mod/data" "$RUNNER_TEMP/mod/pg"
           cat > "$RUNNER_TEMP/mod/.env" <<EOF
+          # this job never runs install or publish: the value only has to be set
           MYOPENDATA_REF=${GITHUB_SHA}
           MYOPENDATA_HOST_DIR=$RUNNER_TEMP/mod/data
           MYOPENDATA_UID_GID=$(id -u):$(id -g)

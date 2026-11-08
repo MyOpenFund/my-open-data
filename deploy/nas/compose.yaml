@@ -40,7 +40,10 @@ services:
       - sh
       - -c
       - |
-        psql -X -d postgres -v db="$$DB" -v publisher_password="$$PUB" -v reader_password="$$READ" <<'SQL'
+        psql -X -d postgres <<'SQL'
+        \getenv db DB
+        \getenv publisher_password PUB
+        \getenv reader_password READ
         -- BEGIN roles.sql
         \set ON_ERROR_STOP on
         SELECT format('CREATE ROLE lake_publisher LOGIN PASSWORD %L', :'publisher_password')
@@ -96,7 +99,8 @@ services:
       - >-
         mkdir -p /data/backups &&
         f="/data/backups/$$PGDATABASE-$$(date -u +%Y%m%dT%H%M%SZ).dump" &&
-        pg_dump -Fc -f "$$f.part" && mv "$$f.part" "$$f" && ls -l "$$f"
+        { pg_dump -Fc -f "$$f.part" || { rm -f "$$f.part"; exit 1; }; } &&
+        mv "$$f.part" "$$f" && ls -l "$$f"
 
   publish:
     image: python:3.12-slim
@@ -108,6 +112,9 @@ services:
         condition: service_completed_successfully
     user: ${MYOPENDATA_UID_GID:?set}
     read_only: true
+    working_dir: /tmp
+    # Docker mounts tmpfs noexec by default; DuckDB loads the ducklake and postgres extensions from
+    # $HOME/.duckdb (under /tmp) and downloads them at each start, so /tmp must allow exec.
     tmpfs:
       - /tmp:exec
     cap_drop:

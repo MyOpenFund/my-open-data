@@ -8,6 +8,10 @@ publisher. It runs the same on a laptop, a NAS or a rented server.
 2. `docker compose up -d` (in Dockge: Démarrer). `catalog` stays up; `init` creates the roles and
    the database; `install` installs my-open-data; `backup` dumps the catalogue to `backups/`;
    `publish` publishes what is in `landing/`, never without a successful dump.
+   `install` and `publish` need outbound internet (pip and git; DuckDB downloads its extensions at
+   each start). `docker compose up -d` (Dockge: Démarrer) returns success even if `publish` fails:
+   read `docker compose logs publish` (Dockge: the publish container's log) for the JSON report and
+   the exit status.
 3. Approve each contract once, before its first publish: set `MYOPENDATA_APPROVE` and
    `MYOPENDATA_APPROVED_BY` in `.env`, start again. Approving again is a no-op.
 4. To publish again, put new batches in `landing/` and start the stack again.
@@ -20,6 +24,7 @@ Readers elsewhere connect as `lake_reader` on `MYOPENDATA_PG_BIND` and set `MYOP
 to where they see the same files; read-only sessions accept a data path that differs from the
 publisher's.
 
-Backups: the dump covers the catalogue; protect the directories with your machine's snapshots. The
+Backups: the dump covers the catalogue; dumps accumulate, one per start, so prune `backups/`
+yourself; protect the directories with your machine's snapshots. The
 store can be rebuilt by publishing `landing/_published/` again. `roles.sql` is the same SQL as
 `init`, for a store on a Postgres you already run.

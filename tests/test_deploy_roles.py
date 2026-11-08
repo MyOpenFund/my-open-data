@@ -1,4 +1,8 @@
-"""deploy/nas: roles.sql on a real Postgres, and the copy compose.yaml runs at init."""
+"""deploy/nas: roles.sql on a real Postgres, and the copy compose.yaml runs at init.
+
+The Postgres test needs a throwaway server: it creates the cluster-wide roles lake_publisher and
+lake_reader (test passwords) and drops them again at the end.
+"""
 
 import os
 import shutil
@@ -90,3 +94,6 @@ def test_roles_script_publisher_writes_reader_reads_only(admin, tmp_path):
             assert r.returncode != 0 and "permission denied" in r.stderr, (sql, r.stderr)
     finally:
         _psql(admin, "-c", f'DROP DATABASE IF EXISTS "{db}" WITH (FORCE)')
+        # The default privileges lived in the dropped database, so the roles are free to go.
+        _psql(admin, "-c", "DROP ROLE IF EXISTS lake_reader")
+        _psql(admin, "-c", "DROP ROLE IF EXISTS lake_publisher")
