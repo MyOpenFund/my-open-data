@@ -3,7 +3,7 @@
 One stack holds a whole store: its Postgres catalogue, the Parquet files, the dumps and the
 publisher. It runs the same on a laptop, a NAS or a rented server.
 
-1. Copy `.env.example` to `.env` next to `compose.yaml` and fill it (directories, passwords,
+1. Copy `.env.example` to `.env` next to `compose.yaml` and fill it (the store directory, passwords,
    where the catalogue port is published, the my-open-data commit). Passwords take effect only
    when the catalogue and roles are first created; to change one later, run `ALTER ROLE ...
    PASSWORD` by hand (for the admin, inside Postgres) and update `.env` to match.
@@ -33,7 +33,10 @@ Readers elsewhere connect as `lake_reader` on `MYOPENDATA_PG_BIND` and set `MYOP
 to where they see the same files; read-only sessions accept a data path that differs from the
 publisher's.
 
-Backups: the dump covers the catalogue; dumps accumulate, one per start, so prune `backups/`
-yourself; protect the directories with your machine's snapshots. The
-store can be rebuilt by publishing `landing/_published/` again. `roles.sql` is the same SQL as
+Backups: the catalogue's Postgres data lives in the Docker volume `pgdata` (Postgres needs a
+directory it can `chmod 0700`, which SMB-shared file systems refuse), so the dump in `backups/` is
+its backup: restore one into a fresh stack with `pg_restore -d <db>` as `lake_publisher`. Dumps
+accumulate, one per start, so prune `backups/` yourself; protect `MYOPENDATA_HOST_DIR` with your
+machine's snapshots. The store can be rebuilt by publishing `landing/_published/` again.
+`docker compose down -v` deletes the catalogue volume. `roles.sql` is the same SQL as
 `init`, for a store on a Postgres you already run.

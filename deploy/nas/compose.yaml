@@ -13,8 +13,10 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: ${MYOPENDATA_ADMIN_PASSWORD:?set}
+    # A Docker volume, not a host directory: Postgres must chmod its data directory to 0700, which
+    # file systems shared over SMB (ACLs) refuse. The catalogue is dumped to backups/ at each start.
     volumes:
-      - ${MYOPENDATA_PG_DATA_DIR:?set}:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     ports:
       - ${MYOPENDATA_PG_BIND:?set}:5432
     healthcheck:
@@ -145,3 +147,4 @@ services:
 
 volumes:
   venv:
+  pgdata:

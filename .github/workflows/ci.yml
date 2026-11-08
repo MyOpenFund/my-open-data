@@ -36,13 +36,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: the stack starts from nothing, creates its roles and dumps its catalogue
         run: |
-          mkdir -p "$RUNNER_TEMP/mod/data" "$RUNNER_TEMP/mod/pg"
+          mkdir -p "$RUNNER_TEMP/mod/data"
           cat > "$RUNNER_TEMP/mod/.env" <<EOF
           # this job never runs install or publish: the value only has to be set
           MYOPENDATA_REF=${GITHUB_SHA}
           MYOPENDATA_HOST_DIR=$RUNNER_TEMP/mod/data
           MYOPENDATA_UID_GID=$(id -u):$(id -g)
-          MYOPENDATA_PG_DATA_DIR=$RUNNER_TEMP/mod/pg
           MYOPENDATA_PG_BIND=127.0.0.1:5433
           MYOPENDATA_CATALOG_DB=lake_catalog
           MYOPENDATA_ADMIN_PASSWORD=ci-admin
