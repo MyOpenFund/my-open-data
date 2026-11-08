@@ -12,8 +12,9 @@ publisher quarantines a mangled copy on its sha256 check).
 
     python push_landing.py SRC_LANDING DEST_LANDING [--dry-run]
 
-Exit code 0; 1 when a source batch has no batch.json (incomplete; not copied); 2 when DEST_LANDING
-is not an existing directory.
+Only the top-level regular files of a batch are copied (the writer makes batch.json and
+data.parquet). Exit code 0; 1 when a source batch has no batch.json (incomplete; not copied); 2
+when a directory or file disappears: DEST_LANDING missing or unmounted, or a source file gone.
 """
 
 from __future__ import annotations
@@ -77,7 +78,7 @@ def push(src: Path, dest: Path, *, dry_run: bool = False) -> PushReport:
         tmp = dest / table / f"{TMP_PREFIX}{name}"
         if tmp.exists():
             shutil.rmtree(tmp)  # left by a push that crashed; only this script uses the prefix
-        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.parent.mkdir(exist_ok=True)  # never parents: DEST must exist (an unmounted share)
         try:
             tmp.mkdir()
             for f in sorted(batch.iterdir()):
