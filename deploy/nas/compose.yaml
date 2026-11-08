@@ -14,7 +14,8 @@ services:
     environment:
       POSTGRES_PASSWORD: ${MYOPENDATA_ADMIN_PASSWORD:?set}
     # A Docker volume, not a host directory: Postgres must chmod its data directory to 0700, which
-    # file systems shared over SMB (ACLs) refuse. The catalogue is dumped to backups/ at each start.
+    # datasets with NFSv4 ACLs (SMB shares) refuse. Deleting the volume deletes the catalogue; it is
+    # dumped to backups/ at each start (see README).
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:

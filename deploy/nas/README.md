@@ -33,10 +33,29 @@ Readers elsewhere connect as `lake_reader` on `MYOPENDATA_PG_BIND` and set `MYOP
 to where they see the same files; read-only sessions accept a data path that differs from the
 publisher's.
 
-Backups: the catalogue's Postgres data lives in the Docker volume `pgdata` (Postgres needs a
-directory it can `chmod 0700`, which SMB-shared file systems refuse), so the dump in `backups/` is
-its backup: restore one into a fresh stack with `pg_restore -d <db>` as `lake_publisher`. Dumps
-accumulate, one per start, so prune `backups/` yourself; protect `MYOPENDATA_HOST_DIR` with your
-machine's snapshots. The store can be rebuilt by publishing `landing/_published/` again.
-`docker compose down -v` deletes the catalogue volume. `roles.sql` is the same SQL as
-`init`, for a store on a Postgres you already run.
+Backups: the catalogue's Postgres data lives in the Docker volume `<project>_pgdata`, outside
+`MYOPENDATA_HOST_DIR`, because Postgres must `chmod 0700` its data directory and datasets with
+NFSv4 ACLs (typical of SMB shares, e.g. TrueNAS) refuse it; a bind mount to a POSIX directory
+would also work. Your machine's snapshots of `MYOPENDATA_HOST_DIR` therefore cover the files and
+the dumps, not the live catalogue: the dump in `backups/` is the catalogue's backup. `backup` runs
+before `publish`, so the newest dump never holds the latest publish. Dumps accumulate, one per
+start; prune `backups/` yourself.
+
+**The volume is the catalogue.** `docker compose down -v`, `docker volume prune`, deleting the
+stack in Dockge, or starting it under another project name (Dockge: another stack name) loses
+the catalogue or leaves it in a volume the stack no longer uses: the store then starts empty.
+
+To restore a dump into an empty catalogue (the stack must not have published yet, or the
+`ducklake_*` tables already exist):
+
+```sh
+docker compose up -d --wait catalog
+docker compose run --rm init
+docker compose run --rm backup sh -c 'pg_restore -d "$PGDATABASE" /data/backups/<file>.dump'
+```
+
+then republish the batches of `landing/_published/` newer than the dump (move them back into
+`landing/<table>/`), and start the stack. Without any dump, the store can be rebuilt by
+publishing all of `landing/_published/` again.
+
+`roles.sql` is the same SQL as `init`, for a store on a Postgres you already run.
