@@ -43,6 +43,7 @@ t0 = store.read_asof("fundamentals", snapshot=42)      # what the store held at 
 r = Recipe("debt_by_source", "1.0.0", {"f": "fundamentals"},
            "SELECT source_code, sum(value) AS debt FROM f GROUP BY 1")
 out = store.assemble(r, as_of=datetime.now(timezone.utc))  # save=True arrives with metrics
+# {"f": "fundamentals:vintages"} gives every row knowable at the date, not the latest per key
 export(out, "debt.xlsx")                               # .csv | .xlsx | .parquet
 ```
 
