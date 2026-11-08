@@ -3,7 +3,7 @@
 One stack holds a whole store: its Postgres catalogue, the Parquet files, the dumps and the
 publisher. It runs the same on a laptop, a NAS or a rented server.
 
-1. Copy `.env.example` to `.env` next to `compose.yaml` and fill it (directories, passwords,
+1. Copy `.env.example` to `.env` next to `compose.yaml` and fill it (the store directory, passwords,
    where the catalogue port is published, the my-open-data commit). Passwords take effect only
    when the catalogue and roles are first created; to change one later, run `ALTER ROLE ...
    PASSWORD` by hand (for the admin, inside Postgres) and update `.env` to match.
@@ -33,7 +33,29 @@ Readers elsewhere connect as `lake_reader` on `MYOPENDATA_PG_BIND` and set `MYOP
 to where they see the same files; read-only sessions accept a data path that differs from the
 publisher's.
 
-Backups: the dump covers the catalogue; dumps accumulate, one per start, so prune `backups/`
-yourself; protect the directories with your machine's snapshots. The
-store can be rebuilt by publishing `landing/_published/` again. `roles.sql` is the same SQL as
-`init`, for a store on a Postgres you already run.
+Backups: the catalogue's Postgres data lives in the Docker volume `<project>_pgdata`, outside
+`MYOPENDATA_HOST_DIR`, because Postgres must `chmod 0700` its data directory and datasets with
+NFSv4 ACLs (typical of SMB shares, e.g. TrueNAS) refuse it; a bind mount to a POSIX directory
+would also work. Your machine's snapshots of `MYOPENDATA_HOST_DIR` therefore cover the files and
+the dumps, not the live catalogue: the dump in `backups/` is the catalogue's backup. `backup` runs
+before `publish`, so the newest dump never holds the latest publish. Dumps accumulate, one per
+start; prune `backups/` yourself.
+
+**The volume is the catalogue.** `docker compose down -v`, `docker volume prune`, deleting the
+stack in Dockge, or starting it under another project name (Dockge: another stack name) loses
+the catalogue or leaves it in a volume the stack no longer uses: the store then starts empty.
+
+To restore a dump, do it before the stack publishes into the new catalogue (otherwise the
+`ducklake_*` tables already exist and `pg_restore` fails):
+
+```sh
+docker compose up -d --wait catalog
+docker compose run --rm init
+docker compose run --rm backup sh -c 'pg_restore -d "$PGDATABASE" /data/backups/<file>.dump'
+```
+
+then republish the batches of `landing/_published/` newer than the dump (move them back into
+`landing/<table>/`), and start the stack. Without any dump, the store can be rebuilt by
+publishing all of `landing/_published/` again.
+
+`roles.sql` is the same SQL as `init`, for a store on a Postgres you already run.
