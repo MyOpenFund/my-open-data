@@ -60,6 +60,8 @@ def admin():
     if not dsn:
         pytest.skip("MYOPENDATA_TEST_PG not set")
     if shutil.which("psql") is None:
+        if os.environ.get("CI"):
+            pytest.fail("psql not installed, but CI must run the Postgres tests")
         pytest.skip("psql not installed")
     return dsn
 
@@ -68,10 +70,10 @@ def admin():
 def test_roles_script_publisher_writes_reader_reads_only(admin, tmp_path):
     db = f"lake_{uuid.uuid4().hex[:8]}"
     args = ["-v", f"db={db}", "-v", "publisher_password=pw1", "-v", "reader_password=pw2"]
-    for _ in range(2):  # idempotent: init runs it on every start of the stack
-        r = _psql(admin, *args, "-f", str(ROLES))
-        assert r.returncode == 0, r.stderr
     try:
+        for _ in range(2):  # idempotent: init runs it on every start of the stack
+            r = _psql(admin, *args, "-f", str(ROLES))
+            assert r.returncode == 0, r.stderr
         pub = StoreConfig(
             data_root=tmp_path / "store",
             catalog="postgres:" + _with(admin, user="lake_publisher", password="pw1", dbname=db),
@@ -84,7 +86,10 @@ def test_roles_script_publisher_writes_reader_reads_only(admin, tmp_path):
         assert rep.exit_code == 0, rep.to_json()
 
         reader_info = _with(admin, user="lake_reader", password="pw2", dbname=db)
-        s = Store.open(StoreConfig(data_root=tmp_path / "store", catalog="postgres:" + reader_info))
+        # Production shape: Postgres catalogue + OVERRIDE_DATA_PATH + reader role, files elsewhere.
+        seen = tmp_path / "seen-elsewhere"
+        shutil.move(pub.data_root, seen)
+        s = Store.open(StoreConfig(data_root=seen, catalog="postgres:" + reader_info))
         try:
             assert s.read_asof("fundamentals").num_rows == 1
         finally:
