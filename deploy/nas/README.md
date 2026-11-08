@@ -45,8 +45,8 @@ start; prune `backups/` yourself.
 stack in Dockge, or starting it under another project name (Dockge: another stack name) loses
 the catalogue or leaves it in a volume the stack no longer uses: the store then starts empty.
 
-To restore a dump into an empty catalogue (the stack must not have published yet, or the
-`ducklake_*` tables already exist):
+To restore a dump, do it before the stack publishes into the new catalogue (otherwise the
+`ducklake_*` tables already exist and `pg_restore` fails):
 
 ```sh
 docker compose up -d --wait catalog
