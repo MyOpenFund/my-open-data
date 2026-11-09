@@ -375,12 +375,21 @@ def test_filings_publish_replay_and_join_the_facts(approved):
     )
     first = publish_pending(approved, now=NOW)
     assert first.exit_code == 0 and not first.quarantined
-    land(approved, FILINGS, [filing_row()], run_id="r2")  # another batch, one known row
+    land(
+        approved,
+        FILINGS,
+        [
+            filing_row(),
+            filing_row(filing_ref="0000789019-25-000002", form="8-K", report_date=None),
+            filing_row(filing_ref="0000789019-25-000003", form="10-K/A"),
+        ],
+        run_id="r2",
+    )  # both known rows re-landed (same rows alone = a duplicate batch) plus one new filing
     second = publish_pending(approved, now=NOW)
     assert second.exit_code == 0 and not second.quarantined
-    assert [p["rows_skipped"] for p in second.published] == [1]
+    assert [p["rows_skipped"] for p in second.published] == [2]
     with Store.open(approved) as s:
-        assert s.read_asof("filings").num_rows == 2
+        assert s.read_asof("filings").num_rows == 3
         rows = s.assemble(
             Recipe(
                 "fact_forms",

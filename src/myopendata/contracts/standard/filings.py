@@ -1,5 +1,7 @@
 """Standard contract: what each filing is, its form and the period it reports on."""
 
+import dataclasses
+
 import pyarrow as pa
 
 from myopendata.contracts.base import Column, Contract
@@ -13,7 +15,8 @@ FILINGS = Contract(
     licence="per-source; see source_code",
     doc=(
         "One row per filing a producer knows of: its form and the period it reports on, as "
-        "filed at the source. valid_date is the filing date. Facts join on filing_ref."
+        "filed at the source. valid_date is the filing date. Facts join on the entity and "
+        "filing_ref."
     ),
     columns=(
         Column("entity_scheme", pa.string(), nullable=False, allowed=ID_SCHEMES),
@@ -22,7 +25,8 @@ FILINGS = Contract(
             "filing_ref",
             pa.string(),
             nullable=False,
-            doc="The filing's identifier at its source (SEC accession), as in fundamentals.",
+            doc="The filing's identifier at its source (SEC accession), as in fundamentals. "
+            "Co-registrants share an accession: join on the entity and filing_ref.",
         ),
         Column(
             "form",
@@ -35,7 +39,12 @@ FILINGS = Contract(
             pa.date32(),
             doc="The period the filing reports on, as stated by the source (SEC reportDate).",
         ),
-        *BITEMPORAL_COLUMNS,
+        *(
+            dataclasses.replace(c, doc="Filing date: the day the source received the filing.")
+            if c.name == "valid_date"
+            else c
+            for c in BITEMPORAL_COLUMNS
+        ),
     ),
     natural_key=(
         "entity_scheme",

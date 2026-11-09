@@ -254,8 +254,6 @@ def test_filing_statements_refuses_another_statement_class():
 
 
 def test_filings_shape():
-    from myopendata.contracts.registry import discover_contracts
-
     assert ("filings", 1) in discover_contracts()
     assert FILINGS.version == "1.0.0"
     assert FILINGS.table_name == "filings_v1"
@@ -266,6 +264,8 @@ def test_filings_shape():
         "valid_date",
         "source_code",
     )
+    assert FILINGS.entity_column_pair == ("entity_scheme", "entity_value")
+    assert FILINGS.partition_by == ("source_code",)
     assert FILINGS.column("form").allowed is None  # forms differ per source
     assert FILINGS.column("report_date").nullable
 

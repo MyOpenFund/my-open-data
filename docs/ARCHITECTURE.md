@@ -89,7 +89,11 @@ instead of the latest per key, for a recipe that compares a value with the one i
 * `filings` 1.0.0 records what each filing is: one row per filing with its `form` as filed
   (`10-K`, `10-K/A`, `10-KT`…) and `report_date`, the period it reports on as the source states
   it; `valid_date` is the filing date. Keyed by entity, `filing_ref`, `valid_date` and
-  `source_code`. Facts join it on `filing_ref` (fiscal year-ends, amendments).
+  `source_code`. Facts join it on the entity and `filing_ref` (fiscal year-ends, amendments);
+  `filing_ref` alone would duplicate rows, as co-registrants share an accession. A filing
+  re-listed under another filing date is a second row (the key includes `valid_date`) and readers
+  see both; another `form` or `report_date` for the same key and `known_at` quarantines the batch
+  (`conflicting_republish`).
 * A contract version is publishable once approved (`myopendata contracts approve NAME MAJOR`).
   A strictly additive MINOR (new nullable columns appended, everything else equal, higher version)
   is auto-approved; any other change within a major is refused (`contract_fingerprint_mismatch`).
