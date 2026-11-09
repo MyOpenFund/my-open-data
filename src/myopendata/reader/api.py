@@ -211,11 +211,15 @@ class Store:
         *,
         snapshot: int | None = None,
         vintages: bool = False,
+        inner: str = "",
     ) -> str:
         """SQL for the dataset as it was knowable at as_of: per natural key, the latest row
         with known_at <= as_of (ties: the batch published last). vintages=True keeps one row per
         natural key and known_at instead. snapshot pins a DuckLake version (audit: what the store
-        held)."""
+        held). inner: extra ' AND ...' conditions on alias f, applied before the window; only
+        conditions on natural-key columns keep the result unchanged (read_asof guarantees that).
+        Internal: raw SQL; read_asof passes only conditions on validated natural-key columns
+        with ? placeholders. Never pass caller input."""
         d = self._dataset(dataset)
         as_of = as_of or datetime.now(UTC)
         if as_of.tzinfo is None:
@@ -229,7 +233,7 @@ class Store:
             f"SELECT * EXCLUDE (_rn) FROM (SELECT f.*, row_number() OVER (PARTITION BY {key} "
             f"ORDER BY f.known_at DESC, b.published_at DESC) AS _rn FROM {d.fq} AS f{at} "
             f"JOIN lake.ref.batches AS b{at} USING (batch_id) "
-            f"WHERE f.known_at <= TIMESTAMPTZ '{ts}') WHERE _rn = 1"
+            f"WHERE f.known_at <= TIMESTAMPTZ '{ts}'{inner}) WHERE _rn = 1"
         )
 
     def _one_statement(self, con, sql: str) -> None:
@@ -246,14 +250,19 @@ class Store:
         limit: int | None = None,
         where: str | None = None,
         snapshot: int | None = None,
+        vintages: bool = False,
     ) -> pa.Table:
         """Rows knowable at as_of. filters = {column: value or list of values}, bound as query
         parameters (safe for untrusted input); columns = projection; limit = row cap.
         where = free SQL for trusted callers only (one expression, no ? placeholders, never
-        untrusted input). LIMIT without an ORDER BY returns an arbitrary subset."""
+        untrusted input). LIMIT without an ORDER BY returns an arbitrary subset.
+        vintages=True keeps every known_at per natural key instead of the latest. Filters on
+        natural-key columns are applied inside the as-of window (same result, but DuckLake can
+        prune files); other filters apply after it."""
+        if not isinstance(vintages, bool):
+            raise ValueError("vintages must be a bool")
         as_of = as_of or datetime.now(UTC)
         d = self._dataset(dataset)
-        sql = self.asof_sql(dataset, as_of, snapshot=snapshot)
         known = set(d.column_names) & self._table_columns(d)
         for col in list(filters or {}) + list(columns or []):
             if col not in known:
@@ -262,15 +271,26 @@ class Store:
             isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit < 2**63
         ):
             raise ValueError("limit must be a non-negative int")
-        clauses, params = [], []
+        inner_parts, inner_params, clauses, params = [], [], [], []
         for col, value in (filters or {}).items():
             values = list(value) if isinstance(value, (list, tuple, set)) else [value]
             if not values:
                 raise ValueError(f"empty filter list for {col!r}")
             if any(v is None for v in values):
                 raise ValueError(f"None in filter for {col!r}: use where for IS NULL")
-            clauses.append(f"{col} IN ({', '.join('?' * len(values))})")
-            params += values
+            cond = f"{col} IN ({', '.join('?' * len(values))})"
+            if col in d.natural_key:
+                # Same partition key: filtering inside the window cannot change which row of
+                # a key is latest, and lets DuckLake prune files by column statistics.
+                inner_parts.append(f" AND f.{cond}")
+                inner_params += values
+            else:
+                clauses.append(cond)
+                params += values
+        sql = self.asof_sql(
+            dataset, as_of, snapshot=snapshot, vintages=vintages, inner="".join(inner_parts)
+        )
+        params = inner_params + params
         con = self.con.cursor()
         try:
             if where:
@@ -285,6 +305,15 @@ class Store:
         finally:
             con.close()
         return _stamp(t, as_of, snapshot)
+
+    def freshness(self) -> dict:
+        """When the store last changed: for servers that report data freshness."""
+        n, last = (
+            self.con.cursor()
+            .execute("SELECT count(*), max(published_at) FROM lake.ref.batches")
+            .fetchall()[0]
+        )
+        return {"last_published_at": last, "batches": int(n)}
 
     def assemble(
         self, recipe: Recipe, as_of: datetime | None = None, *, save: bool = False

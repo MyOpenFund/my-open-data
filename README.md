@@ -38,6 +38,8 @@ t = store.read_asof("fundamentals", datetime(2025, 12, 1, tzinfo=timezone.utc),
                     where="original_tag = 'us-gaap:Revenues'")  # pyarrow.Table, latest known per key
 t1 = store.read_asof("fundamentals", filters={"source_code": ["sec"]},
                      columns=["entity_id", "original_tag", "value"], limit=100)  # bound, safe for servers
+store.read_asof("fundamentals", filters={"entity_value": ["0000320193"]}, vintages=True)  # every vintage
+store.freshness()                                      # last published_at, batch count
 store.describe("fundamentals")                         # columns, docs, natural key, licence
 t0 = store.read_asof("fundamentals", snapshot=42)      # what the store held at DuckLake version 42
 r = Recipe("debt_by_source", "1.0.0", {"f": "fundamentals"},
@@ -46,6 +48,16 @@ out = store.assemble(r, as_of=datetime.now(timezone.utc))  # save=True arrives w
 # {"f": "fundamentals:vintages"} gives every row knowable at the date, not the latest per key
 export(out, "debt.xlsx")                               # .csv | .xlsx | .parquet
 ```
+
+**Performance.** Filters on natural-key columns (e.g. `entity_value`) are always pushed explicitly
+before the as-of window, so DuckLake reads only the matching files: on a 20-issuer test store a
+filter on `entity_value` read 1 fundamentals data file (5 kB) instead of 60 files (139 kB). DuckDB
+already pushes a filter on the as-of window's partition key (the natural key) through the window by
+itself (filtering `entity_value` outside the window also read 1 file / 5 kB); the explicit push in
+`read_asof` guarantees that pruning whatever the optimizer version. Filters on other columns read
+the whole table. Keep one batch per issuer, and do not merge data files
+(`ducklake_merge_adjacent_files`) without measuring: merging issuers into one file defeats the
+pruning.
 
 ## Producers
 

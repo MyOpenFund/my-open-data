@@ -142,7 +142,12 @@ the run could not start, crashed, or a batch hit an infrastructure error. Every 
 Use `read_asof(dataset, as_of, filters={col: value | [values]}, columns=[...], limit=n)`: column
 names are checked against the dataset, values are bound as query parameters. `describe(dataset)`
 returns the columns with types, vocabularies and documentation, the natural key and the licence.
-Never forward free text into `where` or a recipe.
+Never forward free text into `where` or a recipe. `vintages=True` returns every vintage knowable at
+the date instead of the latest per key; `freshness()` gives the last publication time and batch count.
+Filters on natural-key columns are applied before the as-of window, so a filter on `entity_value`
+reads only that issuer's files (one batch per issuer = one file). DuckDB 2 already pushes a filter
+on the window's partition key, the natural key, by itself; the explicit push guarantees it whatever
+the optimizer version. Do not merge data files without measuring.
 
 A reader may see the lake's files under another path than the publisher (a publisher on a
 server, a reader on a mounted share): set its `MYOPENDATA_DATA_ROOT` to where it sees them.
