@@ -308,8 +308,11 @@ class Store:
 
     def freshness(self) -> dict:
         """When the store last changed: for servers that report data freshness."""
-        n, last = self.con.cursor().execute(
-            "SELECT count(*), max(published_at) FROM lake.ref.batches").fetchall()[0]
+        n, last = (
+            self.con.cursor()
+            .execute("SELECT count(*), max(published_at) FROM lake.ref.batches")
+            .fetchall()[0]
+        )
         return {"last_published_at": last, "batches": int(n)}
 
     def assemble(
