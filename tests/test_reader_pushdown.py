@@ -92,3 +92,13 @@ def test_pushed_sql_names_the_key_filter_inside_the_window(store):
 def test_vintages_rejects_non_bool(store):
     with pytest.raises(ValueError):
         store.read_asof("fundamentals", vintages="yes")
+
+
+def test_freshness_reports_last_publish(store):
+    f = store.freshness()
+    assert f["batches"] == 2 and f["last_published_at"] is not None
+
+
+def test_freshness_of_an_empty_store(approved):
+    with Store.open(approved) as s:
+        assert s.freshness() == {"last_published_at": None, "batches": 0}
