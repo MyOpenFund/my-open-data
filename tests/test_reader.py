@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -356,6 +357,51 @@ def test_a_recipe_joins_facts_with_their_statement_position(approved):
             )
         ).to_pylist()
     assert rows == [{"original_tag": "us-gaap:LongTermDebt", "statement": "BS"}]
+
+
+def test_filings_publish_replay_and_join_the_facts(approved):
+    from conftest import filing_row
+
+    from myopendata.contracts.standard import FILINGS
+    from myopendata.publisher import approve_contract
+
+    approve_contract(approved, FILINGS, "test")
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    land(
+        approved,
+        FILINGS,
+        [filing_row(), filing_row(filing_ref="0000789019-25-000002", form="8-K", report_date=None)],
+    )
+    first = publish_pending(approved, now=NOW)
+    assert first.exit_code == 0 and not first.quarantined
+    land(
+        approved,
+        FILINGS,
+        [
+            filing_row(),
+            filing_row(filing_ref="0000789019-25-000002", form="8-K", report_date=None),
+            filing_row(filing_ref="0000789019-25-000003", form="10-K/A"),
+        ],
+        run_id="r2",
+    )  # both known rows re-landed (same rows alone = a duplicate batch) plus one new filing
+    second = publish_pending(approved, now=NOW)
+    assert second.exit_code == 0 and not second.quarantined
+    assert [p["rows_skipped"] for p in second.published] == [2]
+    with Store.open(approved) as s:
+        assert s.read_asof("filings").num_rows == 3
+        rows = s.assemble(
+            Recipe(
+                "fact_forms",
+                "1.0.0",
+                {"f": "fundamentals", "g": "filings"},
+                "SELECT f.original_tag, g.form, g.report_date FROM f "
+                "JOIN g ON g.filing_ref = f.filing_ref AND g.entity_id = f.entity_id",
+            )
+        ).to_pylist()
+    assert rows == [
+        {"original_tag": "us-gaap:LongTermDebt", "form": "10-K", "report_date": date(2025, 6, 30)}
+    ]
 
 
 def test_reader_reads_files_seen_under_another_path(approved, tmp_path):

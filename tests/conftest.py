@@ -116,3 +116,20 @@ def statement_row(**over):
     )
     base.update(over)
     return base
+
+
+def filing_row(**over):
+    base = dict(
+        entity_scheme="cik",
+        entity_value="0000789019",
+        filing_ref="0000789019-25-000001",
+        form="10-K",
+        report_date=date(2025, 6, 30),
+        valid_date=date(2025, 7, 30),
+        known_at=ts("2025-07-30T20:00:00"),
+        known_at_kind="published",
+        source_code="sec",
+        source_doc_id="doc-10k-2025",
+    )
+    base.update(over)
+    return base
