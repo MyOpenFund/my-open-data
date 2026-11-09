@@ -51,7 +51,7 @@ export(out, "debt.xlsx")                               # .csv | .xlsx | .parquet
 
 **Performance.** Filters on natural-key columns (e.g. `entity_value`) are always pushed explicitly
 before the as-of window, so DuckLake reads only the matching files: on a 20-issuer test store a filter
-on `entity_value` read 1 fundamentals data file (5 kB) instead of 60 files (139 kB). Filters on other
+on `entity_value` read 1 fundamentals data file (5 kB) instead of 60 files (139 kB). DuckDB already pushes a filter on the as-of window's partition key (the natural key) through the window by itself (filtering `entity_value` outside the window also read 1 file / 5 kB); the explicit push in `read_asof` guarantees that pruning whatever the optimizer version. Filters on other
 columns read the whole table. Keep one batch per issuer, and do not merge data files
 (`ducklake_merge_adjacent_files`) without measuring: merging issuers into one file defeats the pruning.
 

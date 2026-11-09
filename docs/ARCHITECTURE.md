@@ -145,7 +145,7 @@ returns the columns with types, vocabularies and documentation, the natural key 
 Never forward free text into `where` or a recipe. `vintages=True` returns every vintage knowable at
 the date instead of the latest per key; `freshness()` gives the last publication time and batch count.
 Filters on natural-key columns are applied before the as-of window, so a filter on `entity_value` reads
-only that issuer's files (one batch per issuer = one file); do not merge data files without measuring.
+only that issuer's files (DuckDB 2 already pushes a filter on the window's partition key, the natural key, by itself; the explicit push guarantees it whatever the optimizer version) (one batch per issuer = one file); do not merge data files without measuring.
 
 A reader may see the lake's files under another path than the publisher (a publisher on a
 server, a reader on a mounted share): set its `MYOPENDATA_DATA_ROOT` to where it sees them.
