@@ -6,7 +6,12 @@ import pytest
 from myopendata.contracts.base import Column
 from myopendata.contracts.registry import discover_contracts
 from myopendata.contracts.rules import ContractError, validate_contract
-from myopendata.contracts.standard import ENTITY_OBSERVATIONS, FILING_STATEMENTS, FUNDAMENTALS
+from myopendata.contracts.standard import (
+    ENTITY_OBSERVATIONS,
+    FILING_STATEMENTS,
+    FILINGS,
+    FUNDAMENTALS,
+)
 
 
 def test_standard_contracts_are_discovered_via_entry_point():
@@ -14,7 +19,7 @@ def test_standard_contracts_are_discovered_via_entry_point():
     assert ("fundamentals", 3) in found and ("entity_observations", 1) in found
 
 
-@pytest.mark.parametrize("c", [FUNDAMENTALS, ENTITY_OBSERVATIONS, FILING_STATEMENTS])
+@pytest.mark.parametrize("c", [FUNDAMENTALS, ENTITY_OBSERVATIONS, FILING_STATEMENTS, FILINGS])
 def test_standard_contracts_pass_common_rules(c):
     validate_contract(c)
 
@@ -246,3 +251,38 @@ def test_filing_statements_refuses_another_statement_class():
             table(FILING_STATEMENTS, [statement_row(statement="EQ")]),
             now=NOW,
         )
+
+
+def test_filings_shape():
+    from myopendata.contracts.registry import discover_contracts
+
+    assert ("filings", 1) in discover_contracts()
+    assert FILINGS.version == "1.0.0"
+    assert FILINGS.table_name == "filings_v1"
+    assert FILINGS.natural_key == (
+        "entity_scheme",
+        "entity_value",
+        "filing_ref",
+        "valid_date",
+        "source_code",
+    )
+    assert FILINGS.column("form").allowed is None  # forms differ per source
+    assert FILINGS.column("report_date").nullable
+
+
+def test_filings_accept_a_filing_without_report_date():
+    from conftest import NOW, filing_row, table
+
+    from myopendata.contracts.rules import conform
+
+    t = conform(FILINGS, table(FILINGS, [filing_row(form="40-F", report_date=None)]), now=NOW)
+    assert t.num_rows == 1
+
+
+def test_filings_refuse_a_missing_form():
+    from conftest import NOW, filing_row, table
+
+    from myopendata.contracts.rules import BatchInvalid, conform
+
+    with pytest.raises(BatchInvalid):
+        conform(FILINGS, table(FILINGS, [filing_row(form=None)]), now=NOW)
