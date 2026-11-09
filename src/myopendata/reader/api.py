@@ -217,7 +217,9 @@ class Store:
         with known_at <= as_of (ties: the batch published last). vintages=True keeps one row per
         natural key and known_at instead. snapshot pins a DuckLake version (audit: what the store
         held). inner: extra ' AND ...' conditions on alias f, applied before the window; only
-        conditions on natural-key columns keep the result unchanged (read_asof guarantees that)."""
+        conditions on natural-key columns keep the result unchanged (read_asof guarantees that).
+        Internal: raw SQL; read_asof passes only conditions on validated natural-key columns
+        with ? placeholders. Never pass caller input."""
         d = self._dataset(dataset)
         as_of = as_of or datetime.now(UTC)
         if as_of.tzinfo is None:
