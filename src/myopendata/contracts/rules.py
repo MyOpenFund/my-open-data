@@ -15,8 +15,10 @@ SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 KINDS = ("fact", "derived")
 KNOWN_AT_KINDS = ("published", "collected")
 # Identifier schemes the publisher can resolve (common rule, spec §6.1). The standard contracts
-# list them as their `allowed` vocabulary, so extending this tuple changes their fingerprint:
-# it ships as a new MAJOR of those contracts, never in place.
+# list them as their `allowed` vocabulary. Appending a scheme at the end is a vocabulary MINOR of
+# those contracts (auto-approved with a version bump); whether a scheme actually resolves
+# entities is decided separately by MYOPENDATA_RESOLVING_SCHEMES (config.py). Removing or
+# reordering schemes stays a MAJOR.
 ID_SCHEMES = ("cik", "lei", "isin", "figi", "ticker", "cb_code", "national_id")
 IDENTITY_COLUMNS = ("subject_scheme", "subject_value", "id_scheme", "id_value", "name", "country")
 # Columns the publisher adds to every published row.
@@ -54,6 +56,8 @@ def validate_contract(c: Contract) -> None:
             raise ContractError(f"{c.name}: {col.name} is assigned by the publisher, not declared")
         if col.allowed is not None and (col.type != pa.string() or not col.allowed):
             raise ContractError(f"{c.name}.{col.name}: allowed needs a non-empty string column")
+        if col.allowed is not None and len(set(col.allowed)) != len(col.allowed):
+            raise ContractError(f"{c.name}.{col.name}: allowed has duplicate values")
     for req, typ in {**BITEMPORAL, **PROVENANCE_OPTIONAL}.items():
         if req not in names:
             raise ContractError(f"{c.name}: missing common column {req}")

@@ -77,11 +77,13 @@ instead of the latest per key, for a recipe that compares a value with the one i
   `filing_statements`, `filings`); producers declare
   their own through the `myopendata.contracts` entry-point group (the spec's working name was
   `myopenfund.datasets`).
-* `fundamentals` 3.0.0 (the current major) keeps facts as filed, keyed by tag: the natural key uses
-  `original_tag` (`ns:Tag`, required), and `filing_ref` (nullable) carries the filing's
-  identifier. `frequency` is `quarterly`, `semiannual`, `annual` (durations) or `instant`
-  (balance-sheet values, `period_start` null); the row check `instant_period` enforces that
-  pairing. The earlier majors were never published to production and no longer ship.
+* `fundamentals` (3 is the major, 3.1.0 the current version) keeps facts as filed, keyed by tag:
+  the natural key uses `original_tag` (`ns:Tag`, required), and `filing_ref` (nullable) carries
+  the filing's identifier. `frequency` is `quarterly`, `semiannual`, `annual` or `ytd9`
+  (durations; `ytd9` = the ~9-month year-to-date, used to derive an unreported fourth quarter)
+  or `instant` (balance-sheet values, `period_start` null); the row check `instant_period`
+  enforces that pairing. The earlier majors were never published to production and no longer
+  ship.
 * `filing_statements` 1.0.0 records which tag a filing placed on which primary statement
   (`BS`, `IS`, `CF`), one row per tag per statement per filing, keyed by entity, `filing_ref`,
   `statement`, `tag`, `valid_date` and `source_code`; a tag of that filing absent here was filed in the notes
@@ -95,8 +97,10 @@ instead of the latest per key, for a recipe that compares a value with the one i
   see both; another `form` or `report_date` for the same key and `known_at` quarantines the batch
   (`conflicting_republish`).
 * A contract version is publishable once approved (`myopendata contracts approve NAME MAJOR`).
-  A strictly additive MINOR (new nullable columns appended, everything else equal, higher version)
-  is auto-approved; any other change within a major is refused (`contract_fingerprint_mismatch`).
+  A strictly additive MINOR (new nullable columns appended and/or new values appended after the
+  existing ones of a column's non-empty vocabulary, everything else equal, higher version) is
+  auto-approved; a vocabulary cannot be created, narrowed, renamed or reordered in a MINOR. Any
+  other change within a major is refused (`contract_fingerprint_mismatch`).
   The fingerprint covers columns, types, nullability, vocabularies, natural key, checks,
   partitioning, licence and the identity flag. Documentation is stored with the first approval
   of a definition; a doc-only patch does not refresh it in v0.

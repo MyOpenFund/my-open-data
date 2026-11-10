@@ -235,7 +235,7 @@ def test_result_records_its_as_of(store):
 
 def test_datasets_carry_name_version_and_licence(store):
     d = {x["name"]: x for x in store.datasets()}
-    assert d["fundamentals"]["version"] == "3.0.0" and d["fundamentals"]["licence"]
+    assert d["fundamentals"]["version"] == "3.1.0" and d["fundamentals"]["licence"]
     assert d["fundamentals"]["table"] == "fundamentals_v3"
 
 
@@ -298,7 +298,7 @@ def test_describe_carries_columns_docs_and_key(store):
     d = store.describe("fundamentals")
     cols = {c["name"]: c for c in d["columns"]}
     assert d["licence"] and d["doc"].startswith("Reported")
-    assert cols["frequency"]["allowed"] == ["annual", "semiannual", "quarterly", "instant"]
+    assert cols["frequency"]["allowed"] == ["annual", "semiannual", "quarterly", "instant", "ytd9"]
     assert "Tag as filed" in cols["original_tag"]["doc"]
     assert d["natural_key"][-1] == "source_code"
 
@@ -324,7 +324,7 @@ def test_approved_but_unpublished_minor_columns_are_not_offered(store, approved)
     store.close()
     minor = dataclasses.replace(
         FUNDAMENTALS,
-        version="3.1.0",
+        version="3.2.0",
         columns=FUNDAMENTALS.columns + (Column("segment", pa.string()),),
     )
     approve_contract(approved, minor, "reviewer")

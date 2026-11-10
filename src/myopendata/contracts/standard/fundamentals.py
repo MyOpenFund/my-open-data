@@ -7,13 +7,15 @@ EXTRACTION_METHODS = ("xbrl_filed", "xbrl_inline", "ocr", "vendor_api", "registe
 # frequency = the period the value covers. Durations: quarterly (~3 months), semiannual
 # (~6 months, incl. US 10-Q six-month year-to-date), annual (~12 months). instant = a
 # balance-sheet value at valid_date (period_start null), one key per balance date whatever the
-# filing frequency of the source or region (2.0.0).
-FREQUENCIES = ("annual", "semiannual", "quarterly", "instant")
+# filing frequency of the source or region (2.0.0). ytd9 = the ~9-month year-to-date duration
+# (US 10-Q third quarter), used to derive an unreported fourth quarter (FY minus 9-month YTD);
+# appended in 3.1.0.
+FREQUENCIES = ("annual", "semiannual", "quarterly", "instant", "ytd9")
 BASES = ("consolidated", "parent")
 
 FUNDAMENTALS = Contract(
     name="fundamentals",
-    version="3.0.0",
+    version="3.1.0",
     kind="fact",
     owner="my-open-data",
     licence="per-source; see source_code",
@@ -43,7 +45,11 @@ FUNDAMENTALS = Contract(
             pa.string(),
             nullable=False,
             allowed=FREQUENCIES,
-            doc="Period covered: quarterly, semiannual, annual (durations) or instant.",
+            doc=(
+                "Period covered: quarterly, semiannual, annual, ytd9 (durations) or instant. "
+                "ytd9 is the ~9-month year-to-date duration (US 10-Q third quarter), used to "
+                "derive an unreported fourth quarter (FY minus 9-month YTD)."
+            ),
         ),
         Column("fiscal_year", pa.int32()),
         Column("basis", pa.string(), nullable=False, allowed=BASES),

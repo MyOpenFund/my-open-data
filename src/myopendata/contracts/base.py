@@ -27,8 +27,9 @@ class Contract:
     """A versioned dataset definition.
 
     kind: "fact" (published from producers) or "derived" (saved recipe output).
-    version: semver "MAJOR.MINOR.PATCH". MINOR may only add nullable columns; anything else is a
-        new MAJOR, which is a new table (<name>_v<major>) and needs a fresh approval.
+    version: semver "MAJOR.MINOR.PATCH". MINOR may only add nullable columns and/or append values to
+        the end of an existing column's non-empty vocabulary (`allowed`); anything else is a new
+        MAJOR, which is a new table (<name>_v<major>) and needs a fresh approval.
     natural_key: columns that identify one fact for one source; uniqueness is on
         natural_key + known_at (a restatement = same key, later known_at).
     entity_column_pair: (scheme column, value column) the publisher resolves to entity_id,
