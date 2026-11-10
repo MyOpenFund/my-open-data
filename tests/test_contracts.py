@@ -43,7 +43,7 @@ def test_duplicate_allowed_values_are_rejected():
         else c
         for c in FUNDAMENTALS.columns
     )
-    with pytest.raises(ContractError, match="frequency"):
+    with pytest.raises(ContractError, match="frequency: allowed has duplicate values"):
         validate_contract(dataclasses.replace(FUNDAMENTALS, columns=cols))
 
 
