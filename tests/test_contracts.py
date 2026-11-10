@@ -147,8 +147,8 @@ def test_fingerprint_covers_terms_and_layout(change):
 
 
 def test_same_definition_several_patches_keeps_highest():
-    found = discover_contracts([_bad(version="3.0.7")])
-    assert found[("fundamentals", 3)].version == "3.0.7"
+    found = discover_contracts([_bad(version="3.1.7")])
+    assert found[("fundamentals", 3)].version == "3.1.7"
 
 
 def test_identity_dataset_needs_identity_columns():
@@ -195,8 +195,9 @@ def test_bad_env_values_are_clear_errors(monkeypatch, tmp_path, var, value):
 def test_fundamentals_v3_shape():
     from myopendata.contracts.standard.fundamentals import FREQUENCIES
 
-    assert FUNDAMENTALS.version == "3.0.0" and FUNDAMENTALS.table_name == "fundamentals_v3"
-    assert FREQUENCIES == ("annual", "semiannual", "quarterly", "instant")
+    assert FUNDAMENTALS.version == "3.1.0" and FUNDAMENTALS.table_name == "fundamentals_v3"
+    assert FREQUENCIES == ("annual", "semiannual", "quarterly", "instant", "ytd9")
+    assert FREQUENCIES[-1] == "ytd9"
     assert FUNDAMENTALS.checks == ("ocr_confidence", "instant_period")
     assert "USD/shares" in FUNDAMENTALS.column("unit").doc
     assert FUNDAMENTALS.natural_key == (

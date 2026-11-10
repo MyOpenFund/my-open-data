@@ -26,7 +26,7 @@ def _write(tmp_path, rows, **kw):
 def test_batch_lands_with_manifest(tmp_path):
     ref = _write(tmp_path, [fund_row()], source_inputs=["companyfacts/CIK0000789019.json"])
     m = json.loads((ref.path / "batch.json").read_text())
-    assert ref.created and m["rows"] == 1 and m["contract_version"] == "3.0.0"
+    assert ref.created and m["rows"] == 1 and m["contract_version"] == "3.1.0"
     assert ref.path.parent.name == "fundamentals_v3"
     assert not list(tmp_path.glob("*/.tmp-*"))
 

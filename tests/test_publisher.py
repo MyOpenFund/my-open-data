@@ -1,7 +1,7 @@
 import dataclasses
 import json
 import shutil
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pyarrow as pa
@@ -336,7 +336,7 @@ def test_additive_minor_is_auto_approved_and_column_added(approved):
     publish_pending(approved, now=NOW)
     minor = dataclasses.replace(
         FUNDAMENTALS,
-        version="3.1.0",
+        version="3.2.0",
         columns=FUNDAMENTALS.columns + (Column("segment", pa.string()),),
     )
     write_batch(
@@ -353,7 +353,7 @@ def test_additive_minor_is_auto_approved_and_column_added(approved):
         contracts={("fundamentals", 3): minor, ("entity_observations", 1): ENTITY_OBSERVATIONS},
     )
     assert rep.exit_code == 0, rep.to_json()
-    assert q(approved, "SELECT approved_by FROM lake.ref.contracts WHERE version = '3.1.0'") == [
+    assert q(approved, "SELECT approved_by FROM lake.ref.contracts WHERE version = '3.2.0'") == [
         ("auto-minor",)
     ]
     assert q(
@@ -364,7 +364,7 @@ def test_additive_minor_is_auto_approved_and_column_added(approved):
     ]
 
 
-def _with_allowed(contract, column, allowed, version="3.1.0", extra=()):
+def _with_allowed(contract, column, allowed, version="3.2.0", extra=()):
     cols = tuple(
         dataclasses.replace(c, allowed=allowed) if c.name == column else c for c in contract.columns
     )
@@ -393,27 +393,27 @@ def _publish_under(approved, minor, **row):
 
 
 def test_appended_vocabulary_value_is_auto_approved_and_publishes(approved):
-    minor = _with_allowed(FUNDAMENTALS, "frequency", _freq() + ("ytd9",))
-    rep = _publish_under(approved, minor, frequency="ytd9", period_start=date(2025, 1, 1))
+    minor = _with_allowed(FUNDAMENTALS, "frequency", _freq() + ("ytd12",))
+    rep = _publish_under(approved, minor, frequency="ytd12", period_start=date(2025, 1, 1))
     assert rep.exit_code == 0, rep.to_json()
-    assert q(approved, "SELECT approved_by FROM lake.ref.contracts WHERE version = '3.1.0'") == [
+    assert q(approved, "SELECT approved_by FROM lake.ref.contracts WHERE version = '3.2.0'") == [
         ("auto-minor",)
     ]
-    assert q(approved, "SELECT frequency FROM lake.facts.fundamentals_v3") == [("ytd9",)]
+    assert q(approved, "SELECT frequency FROM lake.facts.fundamentals_v3") == [("ytd12",)]
 
 
 def test_appended_vocabulary_value_and_appended_column_in_one_minor(approved):
     minor = _with_allowed(
         FUNDAMENTALS,
         "frequency",
-        _freq() + ("ytd9",),
+        _freq() + ("ytd12",),
         extra=(Column("segment", pa.string()),),
     )
     rep = _publish_under(
-        approved, minor, frequency="ytd9", period_start=date(2025, 1, 1), segment="Cloud"
+        approved, minor, frequency="ytd12", period_start=date(2025, 1, 1), segment="Cloud"
     )
     assert rep.exit_code == 0, rep.to_json()
-    assert q(approved, "SELECT approved_by FROM lake.ref.contracts WHERE version = '3.1.0'") == [
+    assert q(approved, "SELECT approved_by FROM lake.ref.contracts WHERE version = '3.2.0'") == [
         ("auto-minor",)
     ]
 
@@ -421,8 +421,8 @@ def test_appended_vocabulary_value_and_appended_column_in_one_minor(approved):
 def _bad_vocabularies():
     old = _freq()
     return {
-        "reordered": tuple(reversed(old + ("ytd9",))),
-        "removed_and_added": old[1:] + ("ytd9",),
+        "reordered": tuple(reversed(old + ("ytd12",))),
+        "removed_and_added": old[1:] + ("ytd12",),
         "renamed": (old[0] + "_x",) + old[1:],
         "removed": old[:1] + old[2:],
     }
@@ -446,16 +446,16 @@ def test_vocabulary_cannot_be_added_to_an_open_column_in_a_minor(approved):
 
 
 def test_appended_vocabulary_value_without_a_higher_version_is_refused(approved):
-    same = _with_allowed(FUNDAMENTALS, "frequency", _freq() + ("ytd9",), version="3.0.0")
+    same = _with_allowed(FUNDAMENTALS, "frequency", _freq() + ("ytd12",), version="3.1.0")
     with pytest.raises(ApprovalRefused):
         approve_contract(approved, same, "x")
-    rep = _publish_under(approved, same, frequency="ytd9", period_start=date(2025, 1, 1))
+    rep = _publish_under(approved, same, frequency="ytd12", period_start=date(2025, 1, 1))
     assert rep.quarantined[0]["reasons"] == ["contract_fingerprint_mismatch"]
 
 
 def test_breaking_change_in_same_major_quarantines(approved):
     breaking = dataclasses.replace(
-        FUNDAMENTALS, version="3.1.0", natural_key=FUNDAMENTALS.natural_key + ("unit",)
+        FUNDAMENTALS, version="3.2.0", natural_key=FUNDAMENTALS.natural_key + ("unit",)
     )
     land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
     write_batch(
@@ -815,7 +815,7 @@ def test_other_entities_rows_never_count_as_known(approved):
 
 SEGMENTED = dataclasses.replace(
     FUNDAMENTALS,
-    version="3.1.0",
+    version="3.2.0",
     columns=FUNDAMENTALS.columns + (Column("segment", pa.string()),),
 )
 SEGMENTED_REG = {("fundamentals", 3): SEGMENTED, ("entity_observations", 1): ENTITY_OBSERVATIONS}
@@ -969,3 +969,54 @@ def test_contract_without_entity_columns_is_idempotent_too(cfg):
     land(cfg, RATES, [rate_row(value=2.6)], run_id="r3")
     rep = publish_pending(cfg, contracts=reg, now=NOW)
     assert rep.quarantined[0]["reasons"] == ["conflicting_republish:1"]
+
+
+def _v300():
+    """The 3.0.0 fundamentals definition: frequency vocabulary without ytd9."""
+    cols = tuple(
+        dataclasses.replace(c, allowed=_freq()[:-1]) if c.name == "frequency" else c
+        for c in FUNDAMENTALS.columns
+    )
+    return dataclasses.replace(FUNDAMENTALS, version="3.0.0", columns=cols)
+
+
+def test_fundamentals_3_1_0_publishes_ytd9_over_a_published_3_0_0(cfg):
+    from myopendata.reader import Store
+
+    old = _v300()
+    assert _freq(old) == ("annual", "semiannual", "quarterly", "instant")
+    approve_contract(cfg, ENTITY_OBSERVATIONS, "test")
+    approve_contract(cfg, old, "test")
+    history = [fund_row(), fund_row(original_tag="us-gaap:Cash")]
+    land(cfg, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(cfg, old, history, run_id="r1")
+    reg = {("fundamentals", 3): old, ("entity_observations", 1): ENTITY_OBSERVATIONS}
+    assert publish_pending(cfg, now=NOW, contracts=reg).exit_code == 0
+
+    ytd = fund_row(
+        original_tag="us-gaap:Revenues",
+        frequency="ytd9",
+        period_start=date(2025, 6, 30) - timedelta(days=273),
+    )
+    land(cfg, FUNDAMENTALS, history + [ytd], run_id="r2")
+    rep = publish_pending(cfg, now=NOW)
+    assert rep.exit_code == 0 and not rep.quarantined, rep.to_json()
+    assert [(p["rows"], p["rows_skipped"]) for p in rep.published] == [(1, 2)]
+    assert q(cfg, "SELECT approved_by FROM lake.ref.contracts WHERE version = '3.1.0'") == [
+        ("auto-minor",)
+    ]
+    with Store.open(cfg) as s:
+        t = s.read_asof("fundamentals", filters={"frequency": "ytd9"})
+    assert t.num_rows == 1 and t.column("original_tag").to_pylist() == ["us-gaap:Revenues"]
+
+
+def test_frequency_outside_the_vocabulary_is_still_refused(approved):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    ref = land(approved, FUNDAMENTALS, [fund_row()])
+    _forge(
+        ref,
+        [fund_row(frequency="ytd6", period_start=date(2025, 1, 1))],
+        contract=FUNDAMENTALS,
+    )
+    rep = publish_pending(approved, now=NOW)
+    assert "value_not_allowed:frequency:1" in rep.quarantined[0]["reasons"]
