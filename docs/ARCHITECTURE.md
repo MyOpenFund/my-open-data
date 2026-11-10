@@ -95,8 +95,10 @@ instead of the latest per key, for a recipe that compares a value with the one i
   see both; another `form` or `report_date` for the same key and `known_at` quarantines the batch
   (`conflicting_republish`).
 * A contract version is publishable once approved (`myopendata contracts approve NAME MAJOR`).
-  A strictly additive MINOR (new nullable columns appended, everything else equal, higher version)
-  is auto-approved; any other change within a major is refused (`contract_fingerprint_mismatch`).
+  A strictly additive MINOR (new nullable columns appended and/or new values appended after the
+  existing ones of a column's non-empty vocabulary, everything else equal, higher version) is
+  auto-approved; a vocabulary cannot be created, narrowed, renamed or reordered in a MINOR. Any
+  other change within a major is refused (`contract_fingerprint_mismatch`).
   The fingerprint covers columns, types, nullability, vocabularies, natural key, checks,
   partitioning, licence and the identity flag. Documentation is stored with the first approval
   of a definition; a doc-only patch does not refresh it in v0.

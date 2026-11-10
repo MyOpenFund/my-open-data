@@ -6,13 +6,14 @@ from decimal import Decimal
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from conftest import NOW, fund_row, obs_rows, table, ts
 
 from myopendata.contracts.base import Column, Contract
 from myopendata.contracts.standard import ENTITY_OBSERVATIONS, FUNDAMENTALS
 from myopendata.contracts.standard._common import BITEMPORAL_COLUMNS
 from myopendata.lake import connect
-from myopendata.publisher import approve_contract, publish_pending
+from myopendata.publisher import ApprovalRefused, approve_contract, publish_pending
 from myopendata.writer import write_batch
 from myopendata.writer.batch import file_sha256
 
@@ -361,6 +362,95 @@ def test_additive_minor_is_auto_approved_and_column_added(approved):
         ("us-gaap:LongTermDebt", None),
         ("us-gaap:Revenue", "Cloud"),
     ]
+
+
+def _with_allowed(contract, column, allowed, version="3.1.0", extra=()):
+    cols = tuple(
+        dataclasses.replace(c, allowed=allowed) if c.name == column else c for c in contract.columns
+    )
+    return dataclasses.replace(contract, version=version, columns=cols + tuple(extra))
+
+
+def _freq(contract=FUNDAMENTALS):
+    return next(c for c in contract.columns if c.name == "frequency").allowed
+
+
+def _publish_under(approved, minor, **row):
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    write_batch(
+        minor,
+        table(minor, [fund_row(**row)]),
+        landing_root=approved.landing,
+        run_id="r",
+        producer="t",
+        now=NOW,
+    )
+    return publish_pending(
+        approved,
+        now=NOW,
+        contracts={("fundamentals", 3): minor, ("entity_observations", 1): ENTITY_OBSERVATIONS},
+    )
+
+
+def test_appended_vocabulary_value_is_auto_approved_and_publishes(approved):
+    minor = _with_allowed(FUNDAMENTALS, "frequency", _freq() + ("ytd9",))
+    rep = _publish_under(approved, minor, frequency="ytd9", period_start=date(2025, 1, 1))
+    assert rep.exit_code == 0, rep.to_json()
+    assert q(approved, "SELECT approved_by FROM lake.ref.contracts WHERE version = '3.1.0'") == [
+        ("auto-minor",)
+    ]
+    assert q(approved, "SELECT frequency FROM lake.facts.fundamentals_v3") == [("ytd9",)]
+
+
+def test_appended_vocabulary_value_and_appended_column_in_one_minor(approved):
+    minor = _with_allowed(
+        FUNDAMENTALS,
+        "frequency",
+        _freq() + ("ytd9",),
+        extra=(Column("segment", pa.string()),),
+    )
+    rep = _publish_under(
+        approved, minor, frequency="ytd9", period_start=date(2025, 1, 1), segment="Cloud"
+    )
+    assert rep.exit_code == 0, rep.to_json()
+    assert q(approved, "SELECT approved_by FROM lake.ref.contracts WHERE version = '3.1.0'") == [
+        ("auto-minor",)
+    ]
+
+
+def _bad_vocabularies():
+    old = _freq()
+    return {
+        "reordered": tuple(reversed(old + ("ytd9",))),
+        "removed_and_added": old[1:] + ("ytd9",),
+        "renamed": (old[0] + "_x",) + old[1:],
+        "removed": old[:1] + old[2:],
+    }
+
+
+@pytest.mark.parametrize("kind", ["reordered", "removed_and_added", "renamed", "removed"])
+def test_non_additive_vocabulary_change_is_refused(approved, kind):
+    bad = _with_allowed(FUNDAMENTALS, "frequency", _bad_vocabularies()[kind])
+    with pytest.raises(ApprovalRefused):
+        approve_contract(approved, bad, "x")
+    rep = _publish_under(approved, bad)
+    assert rep.quarantined[0]["reasons"] == ["contract_fingerprint_mismatch"]
+
+
+def test_vocabulary_cannot_be_added_to_an_open_column_in_a_minor(approved):
+    bad = _with_allowed(FUNDAMENTALS, "unit", ("USD", "EUR"))
+    with pytest.raises(ApprovalRefused):
+        approve_contract(approved, bad, "x")
+    rep = _publish_under(approved, bad)
+    assert rep.quarantined[0]["reasons"] == ["contract_fingerprint_mismatch"]
+
+
+def test_appended_vocabulary_value_without_a_higher_version_is_refused(approved):
+    same = _with_allowed(FUNDAMENTALS, "frequency", _freq() + ("ytd9",), version="3.0.0")
+    with pytest.raises(ApprovalRefused):
+        approve_contract(approved, same, "x")
+    rep = _publish_under(approved, same, frequency="ytd9", period_start=date(2025, 1, 1))
+    assert rep.quarantined[0]["reasons"] == ["contract_fingerprint_mismatch"]
 
 
 def test_breaking_change_in_same_major_quarantines(approved):

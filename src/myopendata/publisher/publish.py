@@ -141,12 +141,25 @@ def approve_contract(
         con.close()
 
 
+def _same_or_widened(old: list, new: list) -> bool:
+    """A column is unchanged, or its non-empty vocabulary only gained values at the end."""
+    if old[:3] != new[:3]:
+        return False
+    return old[3] == new[3] or (bool(old[3]) and new[3][: len(old[3])] == old[3])
+
+
 def _additive(old: dict, new: dict) -> bool:
-    """MINOR rule (D6): everything else equal, new columns appended and nullable."""
+    """MINOR rule (D6): everything else equal; new columns appended and nullable; an existing
+    non-empty vocabulary may gain values after its current ones (never removed/reordered)."""
     if any(old.get(k) != new.get(k) for k in new if k not in ("columns", "docs")):
         return False
     n = len(old["columns"])
-    return new["columns"][:n] == old["columns"] and all(c[2] for c in new["columns"][n:])
+    kept, added = new["columns"][:n], new["columns"][n:]
+    return (
+        len(kept) == n
+        and all(_same_or_widened(o, c) for o, c in zip(old["columns"], kept, strict=True))
+        and all(c[2] for c in added)
+    )
 
 
 def _approval_state(con, c: Contract) -> str:
