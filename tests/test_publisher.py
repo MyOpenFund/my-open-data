@@ -425,15 +425,28 @@ def _bad_vocabularies():
         "removed_and_added": old[1:] + ("ytd12",),
         "renamed": (old[0] + "_x",) + old[1:],
         "removed": old[:1] + old[2:],
+        "tail_shrunk": old[:-1],
+        "pure_reorder": tuple(reversed(old)),
     }
 
 
-@pytest.mark.parametrize("kind", ["reordered", "removed_and_added", "renamed", "removed"])
+@pytest.mark.parametrize(
+    "kind",
+    ["reordered", "removed_and_added", "renamed", "removed", "tail_shrunk", "pure_reorder"],
+)
 def test_non_additive_vocabulary_change_is_refused(approved, kind):
     bad = _with_allowed(FUNDAMENTALS, "frequency", _bad_vocabularies()[kind])
     with pytest.raises(ApprovalRefused):
         approve_contract(approved, bad, "x")
     rep = _publish_under(approved, bad)
+    assert rep.quarantined[0]["reasons"] == ["contract_fingerprint_mismatch"]
+
+
+def test_widened_vocabulary_under_a_lower_version_is_refused(approved):
+    wide = _with_allowed(FUNDAMENTALS, "frequency", _freq() + ("ytd12",), version="3.0.5")
+    with pytest.raises(ApprovalRefused):
+        approve_contract(approved, wide, "x")
+    rep = _publish_under(approved, wide)
     assert rep.quarantined[0]["reasons"] == ["contract_fingerprint_mismatch"]
 
 
@@ -984,6 +997,8 @@ def test_fundamentals_3_1_0_publishes_ytd9_over_a_published_3_0_0(cfg):
     from myopendata.reader import Store
 
     old = _v300()
+    # anchored to production: main's 3.0.0 fingerprint
+    assert old.fingerprint() == "ea77305579a3cdb72cb2804f16284285ddb818d2cad81ddada41417eab07ca9c"
     assert _freq(old) == ("annual", "semiannual", "quarterly", "instant")
     approve_contract(cfg, ENTITY_OBSERVATIONS, "test")
     approve_contract(cfg, old, "test")

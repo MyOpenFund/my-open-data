@@ -36,6 +36,17 @@ def test_missing_common_column_is_rejected(col):
         validate_contract(_without(FUNDAMENTALS, col))
 
 
+def test_duplicate_allowed_values_are_rejected():
+    cols = tuple(
+        dataclasses.replace(c, allowed=("annual", "annual", "instant"))
+        if c.name == "frequency"
+        else c
+        for c in FUNDAMENTALS.columns
+    )
+    with pytest.raises(ContractError, match="frequency"):
+        validate_contract(dataclasses.replace(FUNDAMENTALS, columns=cols))
+
+
 def test_naive_known_at_is_rejected():
     cols = tuple(
         Column("known_at", pa.timestamp("us"), nullable=False) if c.name == "known_at" else c
@@ -197,7 +208,6 @@ def test_fundamentals_v3_shape():
 
     assert FUNDAMENTALS.version == "3.1.0" and FUNDAMENTALS.table_name == "fundamentals_v3"
     assert FREQUENCIES == ("annual", "semiannual", "quarterly", "instant", "ytd9")
-    assert FREQUENCIES[-1] == "ytd9"
     assert FUNDAMENTALS.checks == ("ocr_confidence", "instant_period")
     assert "USD/shares" in FUNDAMENTALS.column("unit").doc
     assert FUNDAMENTALS.natural_key == (
