@@ -88,8 +88,8 @@ class Store:
         self.con = connect(cfg, read_only=True)
         # Pin UTC for the whole database, not just this session: every query runs on a cursor,
         # which is a new DuckDB session and would otherwise take the process time zone (TZ).
+        # The global value covers this connection too (test_reader: process time zone test).
         self.con.execute("SET GLOBAL TimeZone = 'UTC'")
-        self.con.execute("SET TimeZone = 'UTC'")
         lake_dir = cfg.lake_data.as_posix().replace("'", "''")
         self.con.execute(f"SET allowed_directories = ['{lake_dir}/']")
         self.con.execute("SET enable_external_access = false")

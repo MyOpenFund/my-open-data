@@ -451,6 +451,11 @@ cfg = StoreConfig(data_root=Path(sys.argv[1]), catalog=sys.argv[2])
 as_of = datetime(2026, 11, 1, 12, tzinfo=UTC)
 with Store.open(cfg) as s:
     local = s.con.execute("SELECT current_setting('TimeZone')").fetchall()[0][0]
+    cur = s.con.cursor()
+    cursor_tz = cur.execute("SELECT current_setting('TimeZone')").fetchall()[0][0]
+    cur.close()
+    # known_at is 20:00 UTC: a naive literal is read in the session zone, UTC
+    naive = s.read_asof("fundamentals", as_of, where="known_at < '2025-07-30 21:00:00'").num_rows
     tables = {
         "read_asof": s.read_asof("fundamentals", as_of, filters={"source_code": "sec"}),
         "vintages": s.read_asof("fundamentals", as_of, vintages=True, where="source_code = 'sec'"),
@@ -464,15 +469,16 @@ with Store.open(cfg) as s:
     }
     last = s.freshness()["last_published_at"]
     out["freshness"] = [str(last.tzinfo), last.utcoffset().total_seconds()]
-    out["session"] = local
+    out["session"] = [local, cursor_tz, naive]
 print(json.dumps(out))
 """
 
 
 @pytest.mark.parametrize("zone", ["Europe/Paris", "America/New_York", "Asia/Kolkata"])
 def test_reader_returns_utc_whatever_the_process_time_zone(approved, zone):
-    """Docs: the reader pins its session to UTC. Every query runs on a cursor, a new DuckDB
-    session, so the pin must hold there too, not only on the first connection."""
+    """Docs: the reader pins its sessions to UTC. Every query runs on a cursor, a new DuckDB
+    session, so the pin must hold there too, not only on the first connection. This also proves
+    the global setting alone covers both (the reader sets no session-level TimeZone)."""
     import json
     import os
     import subprocess
@@ -495,4 +501,5 @@ def test_reader_returns_utc_whatever_the_process_time_zone(approved, zone):
     assert out["vintages"] == utc_known_at
     assert out["assemble"] == utc_known_at
     assert out["freshness"] == ["UTC", 0.0]
-    assert out["session"] == "UTC"
+    # the first connection and a fresh cursor are both UTC; caller SQL evaluates in UTC
+    assert out["session"] == ["UTC", "UTC", 1]

@@ -32,7 +32,9 @@ REF_DDL = (
 
 def quote_ident(name: str) -> str:
     """One identifier (schema, table, column, view) as DuckDB SQL: always double-quoted, an
-    embedded double quote doubled. The only way a name reaches SQL text.
+    embedded double quote doubled. Every name taken from a contract, the catalogue or a caller
+    reaches SQL text through it; only the library's own constants stay raw (the attach alias
+    LAKE, the ref schema's tables and columns in REF_DDL, internal registrations like _batch).
 
     Contract names already pass NAME_RE, which still admits SQL keywords (`order`, `group`);
     names read back from a catalogue were never checked. Quoting makes any string name exactly
