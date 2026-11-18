@@ -26,7 +26,7 @@ from myopendata.config import StoreConfig
 from myopendata.contracts.base import Contract
 from myopendata.contracts.registry import discover_contracts
 from myopendata.contracts.rules import RESERVED, BatchInvalid, conform, validate_contract
-from myopendata.lake import connect
+from myopendata.lake import LAKE, connect, qualified, quote_ident
 from myopendata.publisher.entities import (
     EntityConflict,
     UnresolvableSubject,
@@ -178,13 +178,18 @@ def _approval_state(con, c: Contract) -> str:
     return "fingerprint_mismatch"
 
 
+def _schema(c: Contract) -> str:
+    return "facts" if c.kind == "fact" else "derived"
+
+
 def _fq(c: Contract) -> str:
-    return f"lake.{'facts' if c.kind == 'fact' else 'derived'}.{c.table_name}"
+    """The contract's table as quoted SQL (names go through quote_ident, never raw)."""
+    return qualified(LAKE, _schema(c), c.table_name)
 
 
 def _published_columns(con, c: Contract) -> set[str] | None:
     """Column names of the contract's published table, or None if it does not exist yet."""
-    schema = "facts" if c.kind == "fact" else "derived"
+    schema = _schema(c)
     exists = con.execute(
         "SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake' AND schema_name = ? "
         "AND table_name = ?",
@@ -247,18 +252,19 @@ def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
         for s in dict.fromkeys([*(c.entity_column_pair or ()), *c.partition_by])
         if s in c.natural_key
     ]
+    qi = quote_ident
     where = " AND ".join(
-        f"EXISTS (SELECT 1 FROM _incoming AS x WHERE x.{s} IS NOT DISTINCT FROM t.{s})"
+        f"EXISTS (SELECT 1 FROM _incoming AS x WHERE x.{qi(s)} IS NOT DISTINCT FROM t.{qi(s)})"
         for s in scoped
     )
     same = (
         " AND ".join(
-            [f"t.{n} IS NOT DISTINCT FROM i.{n}" for n in strict]
-            + [f"(t.{n} IS NULL OR t.{n} IS NOT DISTINCT FROM i.{n})" for n in added]
+            [f"t.{qi(n)} IS NOT DISTINCT FROM i.{qi(n)}" for n in strict]
+            + [f"(t.{qi(n)} IS NULL OR t.{qi(n)} IS NOT DISTINCT FROM i.{qi(n)})" for n in added]
         )
         or "TRUE"
     )
-    on = " AND ".join(f"t.{k} = i.{k}" for k in key)
+    on = " AND ".join(f"t.{qi(k)} = i.{qi(k)}" for k in key)
     con.register("_incoming", out.append_column("_row", pa.array(range(out.num_rows), pa.int64())))
     try:
         matched = con.execute(
@@ -283,14 +289,13 @@ def _ensure_table(con, c: Contract, sample: pa.Table) -> None:
         if have is None:
             con.execute(f"CREATE TABLE {_fq(c)} AS SELECT * FROM _sample LIMIT 0")
             if c.partition_by:
-                con.execute(
-                    f"ALTER TABLE {_fq(c)} SET PARTITIONED BY ({', '.join(c.partition_by)})"
-                )
+                cols = ", ".join(quote_ident(k) for k in c.partition_by)
+                con.execute(f"ALTER TABLE {_fq(c)} SET PARTITIONED BY ({cols})")
             return
         types = {r[0]: r[1] for r in con.execute("DESCRIBE _sample").fetchall()}
         for name in sample.column_names:
             if name not in have:  # additive MINOR change
-                con.execute(f"ALTER TABLE {_fq(c)} ADD COLUMN {name} {types[name]}")
+                con.execute(f"ALTER TABLE {_fq(c)} ADD COLUMN {quote_ident(name)} {types[name]}")
     finally:
         con.unregister("_sample")
 
@@ -510,7 +515,7 @@ class _Run:
             if out.num_rows:
                 _ensure_table(con, c, out)
                 con.register("_batch", out)
-                cols = ", ".join(out.column_names)
+                cols = ", ".join(quote_ident(n) for n in out.column_names)
                 con.execute(f"INSERT INTO {_fq(c)} ({cols}) SELECT {cols} FROM _batch")
                 con.unregister("_batch")
             if new_links:

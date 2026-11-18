@@ -26,7 +26,7 @@ import pyarrow.csv as pcsv
 import pyarrow.parquet as pq
 
 from myopendata.config import StoreConfig
-from myopendata.lake import connect
+from myopendata.lake import LAKE, connect, qualified, quote_ident
 
 VIEW_RE = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 XLSX_MAX_ROWS = 1_048_575  # Excel's sheet limit minus the header row
@@ -74,15 +74,22 @@ class _Dataset:
         return f"{self.name}_v{self.major}"
 
     @property
+    def schema(self) -> str:
+        return "facts" if self.kind == "fact" else "derived"
+
+    @property
     def fq(self) -> str:
-        return f"lake.{'facts' if self.kind == 'fact' else 'derived'}.{self.table}"
+        return qualified(LAKE, self.schema, self.table)
 
 
 class Store:
     def __init__(self, cfg: StoreConfig):
         self.cfg = cfg
         self.con = connect(cfg, read_only=True)
-        self.con.execute("SET TimeZone = 'UTC'")
+        # Pin UTC for the whole database, not just this session: every query runs on a cursor,
+        # which is a new DuckDB session and would otherwise take the process time zone (TZ).
+        # The global value covers this connection too (test_reader: process time zone test).
+        self.con.execute("SET GLOBAL TimeZone = 'UTC'")
         lake_dir = cfg.lake_data.as_posix().replace("'", "''")
         self.con.execute(f"SET allowed_directories = ['{lake_dir}/']")
         self.con.execute("SET enable_external_access = false")
@@ -149,7 +156,7 @@ class Store:
         }
         out = []
         for (_, _), d in sorted(self._registered().items()):
-            schema = "facts" if d.kind == "fact" else "derived"
+            schema = d.schema
             if (schema, d.table) in tables:
                 out.append(
                     {
@@ -167,13 +174,12 @@ class Store:
     def _table_columns(self, d: _Dataset) -> set[str]:
         """Columns that exist in the published table (an approved but not yet published MINOR
         may declare more)."""
-        schema = "facts" if d.kind == "fact" else "derived"
         rows = (
             self.con.cursor()
             .execute(
                 "SELECT column_name FROM duckdb_columns() WHERE database_name = 'lake' "
                 "AND schema_name = ? AND table_name = ?",
-                [schema, d.table],
+                [d.schema, d.table],
             )
             .fetchall()
         )
@@ -227,7 +233,9 @@ class Store:
         if snapshot is not None and (isinstance(snapshot, bool) or not isinstance(snapshot, int)):
             raise ValueError("snapshot must be an int DuckLake version")
         at = f" AT (VERSION => {snapshot})" if snapshot is not None else ""
-        key = ", ".join(f"f.{k}" for k in (*d.natural_key, *(("known_at",) if vintages else ())))
+        key = ", ".join(
+            f"f.{quote_ident(k)}" for k in (*d.natural_key, *(("known_at",) if vintages else ()))
+        )
         ts = as_of.astimezone(UTC).isoformat()
         return (
             f"SELECT * EXCLUDE (_rn) FROM (SELECT f.*, row_number() OVER (PARTITION BY {key} "
@@ -278,7 +286,7 @@ class Store:
                 raise ValueError(f"empty filter list for {col!r}")
             if any(v is None for v in values):
                 raise ValueError(f"None in filter for {col!r}: use where for IS NULL")
-            cond = f"{col} IN ({', '.join('?' * len(values))})"
+            cond = f"{quote_ident(col)} IN ({', '.join('?' * len(values))})"
             if col in d.natural_key:
                 # Same partition key: filtering inside the window cannot change which row of
                 # a key is latest, and lets DuckLake prune files by column statistics.
@@ -296,7 +304,8 @@ class Store:
             if where:
                 self._one_statement(con, f"SELECT 1 WHERE {where}")
                 clauses.append(f"({where})")
-            sql = f"SELECT {', '.join(columns) if columns else '*'} FROM ({sql})"
+            proj = ", ".join(quote_ident(c) for c in columns) if columns else "*"
+            sql = f"SELECT {proj} FROM ({sql})"
             if clauses:
                 sql += " WHERE " + " AND ".join(clauses)
             if limit is not None:
@@ -331,7 +340,7 @@ class Store:
                 if sep and mode != "vintages":
                     raise ValueError(f"bad recipe input {dataset!r}")
                 sql = self.asof_sql(name, as_of, vintages=bool(sep))
-                con.execute(f"CREATE TEMP VIEW {view} AS {sql}")
+                con.execute(f"CREATE TEMP VIEW {quote_ident(view)} AS {sql}")
             t = con.sql(recipe.sql).to_arrow_table()
         finally:
             con.close()

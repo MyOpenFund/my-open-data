@@ -50,10 +50,19 @@ producer ──writer──▶ landing/<table>/<batch_id>/{data.parquet, batch.j
   its `reason.json`. The publisher audits it again from scratch.
 * A writer killed mid-write leaves a `landing/<table>/.tmp-*` directory; the publisher ignores
   these, and they can be deleted when no writer is running.
-* **The reader** attaches the lake read-only, pins the session to UTC, forbids file access outside
-  the lake, attaching databases and changing settings, and accepts only single-statement filters
-  and recipes. Filters and recipe SQL are still trusted caller code: a server exposing the reader
-  to untrusted input must pass structured filters.
+* **The reader** attaches the lake read-only, pins every session (each query's cursor too) to UTC,
+  so `known_at` and other TIMESTAMPTZ values come back as `timestamp[us, tz=UTC]` whatever the
+  process `TZ`, forbids file access outside the lake, attaching databases and changing settings,
+  and accepts only single-statement filters and recipes. Filters and recipe SQL are still trusted
+  caller code: a server exposing the reader to untrusted input must pass structured filters.
+* **Caller SQL runs in UTC.** `where` and recipe SQL evaluate in the UTC session, whatever the
+  process time zone. Until the pin reached every cursor they evaluated in the process time
+  zone, so under a non-UTC `TZ` a naive timestamp literal or a date cast can now
+  select other rows. Measured under `TZ=Europe/Paris` with `known_at` 2025-07-30 20:00 and 23:00
+  UTC: `where="known_at < '2025-07-31'"` returned 1 row before and 2 now;
+  `CAST(known_at AS DATE) = DATE '2025-07-31'` returned 1 before and 0 now. Write explicit
+  offsets (`known_at < TIMESTAMPTZ '2025-07-31 00:00:00+02'`): they mean the same instant under
+  any time zone.
 
 ## Two clocks
 
@@ -140,6 +149,14 @@ the run could not start, crashed, or a batch hit an infrastructure error. Every 
 * A file catalogue admits one process at a time: no reader while the publisher runs. Use Postgres
   for anything shared.
 * pyarrow `and_` / `or_` propagate nulls; row checks use the Kleene variants.
+* Names (`NAME_RE`: lowercase, digits, `_`) may be SQL keywords: a column can be called `order`
+  or `group`. Every schema, table, column and view name the library takes from a contract, the
+  catalogue (names read back never passed `NAME_RE`) or a caller goes through `lake.quote_ident`
+  (double quotes, an embedded `"` doubled). Only the library's own constant names stay raw: the
+  attach alias `lake`, the schemas and `lake.ref.*` tables and their columns, and internal
+  registrations such as `_batch`. Quoting stores nothing differently: tables written
+  before it read and grow unchanged. Free SQL (`where`, recipe SQL) is the caller's: quote such
+  columns there yourself (`where='"order" = 1'`).
 
 ## Reader for servers (MCP)
 

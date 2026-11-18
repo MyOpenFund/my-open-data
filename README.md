@@ -49,6 +49,11 @@ out = store.assemble(r, as_of=datetime.now(timezone.utc))  # save=True arrives w
 export(out, "debt.xlsx")                               # .csv | .xlsx | .parquet
 ```
 
+**Time zone.** The reader's sessions are pinned to UTC: timestamps come back as UTC, and `where`
+and recipe SQL evaluate in UTC whatever the process `TZ`. Under a non-UTC `TZ`, earlier versions
+evaluated them in local time, so a naive literal (`known_at < '2025-07-31'`) or a date cast can
+select other rows now; write explicit offsets (`TIMESTAMPTZ '2025-07-31 00:00:00+02'`).
+
 **Performance.** Filters on natural-key columns (e.g. `entity_value`) are always pushed explicitly
 before the as-of window, so DuckLake reads only the matching files: on a 20-issuer test store a
 filter on `entity_value` read 1 fundamentals data file (5 kB) instead of 60 files (139 kB). DuckDB
