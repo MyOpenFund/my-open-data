@@ -50,9 +50,10 @@ producer ──writer──▶ landing/<table>/<batch_id>/{data.parquet, batch.j
   its `reason.json`. The publisher audits it again from scratch.
 * A writer killed mid-write leaves a `landing/<table>/.tmp-*` directory; the publisher ignores
   these, and they can be deleted when no writer is running.
-* **The reader** attaches the lake read-only, pins the session to UTC, forbids file access outside
-  the lake, attaching databases and changing settings, and accepts only single-statement filters
-  and recipes. Filters and recipe SQL are still trusted caller code: a server exposing the reader
+* **The reader** attaches the lake read-only, pins every session (each query's cursor too) to UTC,
+  so `known_at` and other TIMESTAMPTZ values come back as `timestamp[us, tz=UTC]` whatever the
+  process `TZ`, forbids file access outside the lake, attaching databases and changing settings,
+  and accepts only single-statement filters and recipes. Filters and recipe SQL are still trusted caller code: a server exposing the reader
   to untrusted input must pass structured filters.
 
 ## Two clocks

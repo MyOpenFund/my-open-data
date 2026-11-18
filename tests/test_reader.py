@@ -438,3 +438,61 @@ def test_writer_whose_data_root_moved_fails(approved, tmp_path):
     shutil.move(approved.data_root, moved)
     with pytest.raises(duckdb.Error, match="does not match"):
         connect(StoreConfig(data_root=moved, catalog=approved.catalog), read_only=False)
+
+
+_TZ_PROBE = """
+import json, sys
+from datetime import UTC, datetime
+from pathlib import Path
+from myopendata.config import StoreConfig
+from myopendata.reader import Recipe, Store
+
+cfg = StoreConfig(data_root=Path(sys.argv[1]), catalog=sys.argv[2])
+as_of = datetime(2026, 11, 1, 12, tzinfo=UTC)
+with Store.open(cfg) as s:
+    local = s.con.execute("SELECT current_setting('TimeZone')").fetchall()[0][0]
+    tables = {
+        "read_asof": s.read_asof("fundamentals", as_of, filters={"source_code": "sec"}),
+        "vintages": s.read_asof("fundamentals", as_of, vintages=True, where="source_code = 'sec'"),
+        "assemble": s.assemble(
+            Recipe("k", "1.0.0", {"f": "fundamentals"}, "SELECT known_at FROM f"), as_of
+        ),
+    }
+    out = {
+        n: [str(t["known_at"].type), [k.isoformat() for k in t["known_at"].to_pylist()]]
+        for n, t in tables.items()
+    }
+    last = s.freshness()["last_published_at"]
+    out["freshness"] = [str(last.tzinfo), last.utcoffset().total_seconds()]
+    out["session"] = local
+print(json.dumps(out))
+"""
+
+
+@pytest.mark.parametrize("zone", ["Europe/Paris", "America/New_York", "Asia/Kolkata"])
+def test_reader_returns_utc_whatever_the_process_time_zone(approved, zone):
+    """Docs: the reader pins its session to UTC. Every query runs on a cursor, a new DuckDB
+    session, so the pin must hold there too, not only on the first connection."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    assert publish_pending(approved, now=NOW).exit_code == 0
+    env = {**os.environ, "TZ": zone}
+    run = subprocess.run(
+        [sys.executable, "-c", _TZ_PROBE, str(approved.data_root), approved.catalog],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    out = json.loads(run.stdout)
+    utc_known_at = ["timestamp[us, tz=UTC]", ["2025-07-30T20:00:00+00:00"]]
+    assert out["read_asof"] == utc_known_at
+    assert out["vintages"] == utc_known_at
+    assert out["assemble"] == utc_known_at
+    assert out["freshness"] == ["UTC", 0.0]
+    assert out["session"] == "UTC"
