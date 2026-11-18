@@ -1037,23 +1037,50 @@ def test_frequency_outside_the_vocabulary_is_still_refused(approved):
     assert "value_not_allowed:frequency:1" in rep.quarantined[0]["reasons"]
 
 
-def test_first_error_of_a_failed_publish_is_the_one_reported(approved, monkeypatch):
+@pytest.mark.parametrize("catalog", ["cfg", pytest.param("pg_cfg", marks=pytest.mark.postgres)])
+def test_first_error_of_a_failed_publish_is_the_one_reported(catalog, request, monkeypatch):
     """A statement failing inside the publishing transaction aborts it; the clean-up that
     follows (unregistering the batch's Arrow view) must not replace that error with DuckDB's
-    "Current transaction is aborted"."""
+    "Current transaction is aborted". The run goes on: the next batch publishes, and a rerun
+    publishes the failed one."""
+    from conftest import filing_row
+
+    from myopendata.contracts.standard import FILINGS
     from myopendata.publisher import publish as pub
 
-    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
-    land(approved, FUNDAMENTALS, [fund_row()])
-    real = pub._schema
-    monkeypatch.setattr(
-        pub, "_schema", lambda c: "no_such_schema" if c.name == "fundamentals" else real(c)
-    )
-    rep = publish_pending(approved, now=NOW)
-    assert rep.exit_code == 1 and len(rep.errors) == 1
+    cfg = request.getfixturevalue(catalog)
+    for contract in (ENTITY_OBSERVATIONS, FUNDAMENTALS, FILINGS):
+        approve_contract(cfg, contract, "test")
+    land(cfg, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(cfg, FUNDAMENTALS, [fund_row()])
+    land(cfg, FILINGS, [filing_row()])
+    # The first non-identity batch to reach its transaction gets a table in a schema that does
+    # not exist: CREATE TABLE fails inside BEGIN. Every later batch sees the real schema.
+    real_schema, real_commit = pub._schema, pub._Run.commit
+    state = {"target": None, "done": False}
+
+    def schema(c):
+        return "no_such_schema" if c.name == state["target"] else real_schema(c)
+
+    def commit(self, c, *a, **k):
+        if not state["done"] and not c.resolves_entities:
+            state["target"], state["done"] = c.name, True
+        try:
+            return real_commit(self, c, *a, **k)
+        finally:
+            state["target"] = None
+
+    monkeypatch.setattr(pub, "_schema", schema)
+    monkeypatch.setattr(pub._Run, "commit", commit)
+    rep = publish_pending(cfg, now=NOW)
+    assert rep.exit_code == 1 and len(rep.errors) == 1, rep.to_json()
     assert rep.errors[0]["error"].startswith("CatalogException"), rep.errors[0]["error"]
     assert "transaction is aborted" not in rep.errors[0]["error"].lower()
-    assert list((approved.landing / "fundamentals_v3").iterdir())  # left in place for a retry
+    published = {p["contract"] for p in rep.published}
+    assert "entity_observations_v1" in published and len(published) == 2  # the other one went on
+    monkeypatch.undo()
+    rep = publish_pending(cfg, now=NOW)
+    assert rep.exit_code == 0 and len(rep.published) == 1, rep.to_json()
 
 
 def test_unregister_keeps_the_original_error_but_raises_on_its_own():
@@ -1070,4 +1097,25 @@ def test_unregister_keeps_the_original_error_but_raises_on_its_own():
     with registered(con, "_t", pa.table({"a": [1]})):
         assert con.execute("SELECT a FROM _t").fetchall() == [(1,)]
     with pytest.raises(duckdb.CatalogException):  # unregistered on a clean exit
+        con.execute("SELECT * FROM _t")
+
+
+def test_registered_unregisters_after_a_non_duckdb_error_and_an_early_return():
+    import duckdb
+
+    from myopendata.lake import registered
+
+    con = duckdb.connect()
+    with pytest.raises(KeyError):
+        with registered(con, "_t", pa.table({"a": [1]})):
+            raise KeyError("not a DuckDB error")
+    with pytest.raises(duckdb.CatalogException):
+        con.execute("SELECT * FROM _t")
+
+    def early():
+        with registered(con, "_t", pa.table({"a": [1]})):
+            return con.execute("SELECT a FROM _t").fetchall()
+
+    assert early() == [(1,)]
+    with pytest.raises(duckdb.CatalogException):
         con.execute("SELECT * FROM _t")
