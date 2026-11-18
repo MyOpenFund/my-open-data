@@ -1035,3 +1035,39 @@ def test_frequency_outside_the_vocabulary_is_still_refused(approved):
     )
     rep = publish_pending(approved, now=NOW)
     assert "value_not_allowed:frequency:1" in rep.quarantined[0]["reasons"]
+
+
+def test_first_error_of_a_failed_publish_is_the_one_reported(approved, monkeypatch):
+    """A statement failing inside the publishing transaction aborts it; the clean-up that
+    follows (unregistering the batch's Arrow view) must not replace that error with DuckDB's
+    "Current transaction is aborted"."""
+    from myopendata.publisher import publish as pub
+
+    land(approved, ENTITY_OBSERVATIONS, [obs_rows()])
+    land(approved, FUNDAMENTALS, [fund_row()])
+    real = pub._schema
+    monkeypatch.setattr(
+        pub, "_schema", lambda c: "no_such_schema" if c.name == "fundamentals" else real(c)
+    )
+    rep = publish_pending(approved, now=NOW)
+    assert rep.exit_code == 1 and len(rep.errors) == 1
+    assert rep.errors[0]["error"].startswith("CatalogException"), rep.errors[0]["error"]
+    assert "transaction is aborted" not in rep.errors[0]["error"].lower()
+    assert list((approved.landing / "fundamentals_v3").iterdir())  # left in place for a retry
+
+
+def test_unregister_keeps_the_original_error_but_raises_on_its_own():
+    import duckdb
+
+    from myopendata.lake import registered
+
+    con = duckdb.connect()
+    con.execute("BEGIN")
+    with pytest.raises(duckdb.CatalogException):
+        with registered(con, "_t", pa.table({"a": [1]})):
+            con.execute("CREATE TABLE no_such_schema.t AS SELECT * FROM _t")
+    con.execute("ROLLBACK")
+    with registered(con, "_t", pa.table({"a": [1]})):
+        assert con.execute("SELECT a FROM _t").fetchall() == [(1,)]
+    with pytest.raises(duckdb.CatalogException):  # unregistered on a clean exit
+        con.execute("SELECT * FROM _t")

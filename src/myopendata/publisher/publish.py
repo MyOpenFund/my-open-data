@@ -26,7 +26,7 @@ from myopendata.config import StoreConfig
 from myopendata.contracts.base import Contract
 from myopendata.contracts.registry import discover_contracts
 from myopendata.contracts.rules import RESERVED, BatchInvalid, conform, validate_contract
-from myopendata.lake import LAKE, connect, qualified, quote_ident
+from myopendata.lake import LAKE, connect, qualified, quote_ident, registered
 from myopendata.publisher.entities import (
     EntityConflict,
     UnresolvableSubject,
@@ -265,15 +265,13 @@ def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
         or "TRUE"
     )
     on = " AND ".join(f"t.{qi(k)} = i.{qi(k)}" for k in key)
-    con.register("_incoming", out.append_column("_row", pa.array(range(out.num_rows), pa.int64())))
-    try:
+    incoming = out.append_column("_row", pa.array(range(out.num_rows), pa.int64()))
+    with registered(con, "_incoming", incoming):
         matched = con.execute(
             f"SELECT i._row, bool_or({same}) FROM _incoming AS i JOIN "
             f"(SELECT * FROM {_fq(c)} AS t WHERE {where or 'TRUE'}) AS t ON {on} "
             "GROUP BY i._row"
         ).fetchall()
-    finally:
-        con.unregister("_incoming")
     if not matched:
         return out, 0, 0
     skipped = sum(1 for _, identical in matched if identical)
@@ -284,8 +282,7 @@ def _split_known(con, c: Contract, out: pa.Table) -> tuple[pa.Table, int, int]:
 
 def _ensure_table(con, c: Contract, sample: pa.Table) -> None:
     have = _published_columns(con, c)
-    con.register("_sample", sample)
-    try:
+    with registered(con, "_sample", sample):
         if have is None:
             con.execute(f"CREATE TABLE {_fq(c)} AS SELECT * FROM _sample LIMIT 0")
             if c.partition_by:
@@ -296,8 +293,6 @@ def _ensure_table(con, c: Contract, sample: pa.Table) -> None:
         for name in sample.column_names:
             if name not in have:  # additive MINOR change
                 con.execute(f"ALTER TABLE {_fq(c)} ADD COLUMN {quote_ident(name)} {types[name]}")
-    finally:
-        con.unregister("_sample")
 
 
 def _move(src: Path, root: Path, bucket: str, table: str, name: str, run_id: str) -> Path:
@@ -514,10 +509,9 @@ class _Run:
         try:
             if out.num_rows:
                 _ensure_table(con, c, out)
-                con.register("_batch", out)
                 cols = ", ".join(quote_ident(n) for n in out.column_names)
-                con.execute(f"INSERT INTO {_fq(c)} ({cols}) SELECT {cols} FROM _batch")
-                con.unregister("_batch")
+                with registered(con, "_batch", out):
+                    con.execute(f"INSERT INTO {_fq(c)} ({cols}) SELECT {cols} FROM _batch")
             if new_links:
                 con.executemany(
                     "INSERT INTO lake.ref.entity_identifiers VALUES (?, ?, ?, ?, ?, ?)",
