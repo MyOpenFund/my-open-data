@@ -218,23 +218,43 @@ def test_name_re_still_refuses_hostile_names_first(name):
         validate_contract(dataclasses.replace(KW, name=name))
 
 
-def _hostile_lake(cfg, column):
+# A plain contract (no keyword anywhere) for the tampered-catalogue tests, so that they fail on
+# unquoted SQL for the injection itself, not because a keyword breaks the statement first.
+PLAIN = Contract(
+    name="plain",
+    version="1.0.0",
+    kind="fact",
+    owner="test",
+    licence="test",
+    columns=(Column("series", pa.string(), nullable=False), Column("amount", pa.int64()))
+    + BITEMPORAL_COLUMNS,
+    natural_key=("series", "valid_date", "source_code"),
+)
+
+
+def plain_row(**over):
+    base = {k: v for k, v in kw_row().items() if k not in ("order", "group", "select")}
+    return {"series": "s1", "amount": 1, **base, **over}
+
+
+def _hostile_lake(cfg, contract, row, column):
     """A catalogue whose approved definition and published table carry a column name that never
     went through NAME_RE (a tampered catalogue): the reader must still not run it as SQL."""
-    approve_contract(cfg, KW, "test")
-    _land(cfg, KW, [kw_row()], "r1")
-    assert _publish(cfg, KW).exit_code == 0
+    approve_contract(cfg, contract, "test")
+    _land(cfg, contract, [row], "r1")
+    assert _publish(cfg, contract).exit_code == 0
+    fq = qualified("lake", "facts", contract.table_name)
     con = connect(cfg, read_only=False)
     try:
-        con.execute(f"ALTER TABLE lake.facts.keywords_v1 ADD COLUMN {quote_ident(column)} INTEGER")
-        con.execute(f"UPDATE lake.facts.keywords_v1 SET {quote_ident(column)} = 5")
+        con.execute(f"ALTER TABLE {fq} ADD COLUMN {quote_ident(column)} INTEGER")
+        con.execute(f"UPDATE {fq} SET {quote_ident(column)} = 5")
         definition = json.loads(
             con.execute("SELECT definition_json FROM lake.ref.contracts").fetchall()[0][0]
         )
         definition["columns"].append([column, "int32", True, []])
         con.execute(
-            "INSERT INTO lake.ref.contracts VALUES ('keywords', 1, '1.9.0', 'x', ?, 't', ?)",
-            [json.dumps(definition), datetime.now(UTC)],
+            "INSERT INTO lake.ref.contracts VALUES (?, ?, '1.9.0', 'x', ?, 't', ?)",
+            [contract.name, contract.major, json.dumps(definition), datetime.now(UTC)],
         )
     finally:
         con.close()
@@ -243,17 +263,28 @@ def _hostile_lake(cfg, column):
 @pytest.mark.parametrize(
     "column",
     [
-        "order, (SELECT count(*) FROM lake.ref.contracts) AS injected",
+        # unquoted, this projection returned an extra `injected` column (the subquery ran)
+        "series, (SELECT count(*) FROM lake.ref.contracts) AS injected",
         'x") AS z, (SELECT 1) AS injected --',
-        "limit",
     ],
 )
 def test_tampered_catalogue_column_is_data_not_sql(cfg, column):
-    _hostile_lake(cfg, column)
+    _hostile_lake(cfg, PLAIN, plain_row(), column)
     with Store.open(cfg) as s:
-        t = s.read_asof("keywords", NOW, columns=[column])
+        t = s.read_asof("plain", NOW, columns=[column])
         assert t.column_names == [column] and t.to_pylist() == [{column: 5}]
-        t = s.read_asof("keywords", NOW, filters={column: 5}, columns=["order"])
+        t = s.read_asof("plain", NOW, filters={column: 5}, columns=["series"])
+        assert t.to_pylist() == [{"series": "s1"}]
+
+
+def test_tampered_catalogue_keyword_column(cfg):
+    """A keyword column name that only exists in the catalogue (never validated) on a keyword
+    contract: read as a column, never as SQL."""
+    _hostile_lake(cfg, KW, kw_row(), "limit")
+    with Store.open(cfg) as s:
+        t = s.read_asof("keywords", NOW, columns=["limit"])
+        assert t.to_pylist() == [{"limit": 5}]
+        t = s.read_asof("keywords", NOW, filters={"limit": 5}, columns=["order"])
         assert t.to_pylist() == [{"order": "o1"}]
 
 
