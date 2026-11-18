@@ -120,6 +120,7 @@ def rebuild_attributes(
     Order-independent: a backfill of older history lands in the right interval (decision D4).
     Per valid_date, each attribute takes the latest known non-null value (ties: source_code).
     Consecutive equal values collapse. Runs inside the publishing transaction, after the insert.
+    observations_table: the identity table as quoted SQL (`publish._fq`).
     """
     if not entity_ids:
         return

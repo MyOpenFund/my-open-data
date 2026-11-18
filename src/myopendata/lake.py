@@ -30,6 +30,26 @@ REF_DDL = (
 )
 
 
+def quote_ident(name: str) -> str:
+    """One identifier (schema, table, column, view) as DuckDB SQL: always double-quoted, an
+    embedded double quote doubled. The only way a name reaches SQL text.
+
+    Contract names already pass NAME_RE, which still admits SQL keywords (`order`, `group`);
+    names read back from a catalogue were never checked. Quoting makes any string name exactly
+    that identifier and nothing else, so it can neither break the statement nor inject into it.
+    Quoting does not change what is stored: DuckDB matches identifiers case-insensitively
+    whether quoted or not, and the names here are lowercase.
+    """
+    if not isinstance(name, str) or not name or "\x00" in name:
+        raise ValueError(f"not an identifier: {name!r}")
+    return '"' + name.replace('"', '""') + '"'
+
+
+def qualified(*parts: str) -> str:
+    """A dotted name, every part quoted: qualified("lake", "facts", "t") -> "lake"."facts"."t"."""
+    return ".".join(quote_ident(p) for p in parts)
+
+
 def connect(cfg: StoreConfig, *, read_only: bool) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect()
     con.execute("INSTALL ducklake")

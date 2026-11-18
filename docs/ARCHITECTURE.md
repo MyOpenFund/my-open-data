@@ -140,6 +140,12 @@ the run could not start, crashed, or a batch hit an infrastructure error. Every 
 * A file catalogue admits one process at a time: no reader while the publisher runs. Use Postgres
   for anything shared.
 * pyarrow `and_` / `or_` propagate nulls; row checks use the Kleene variants.
+* Names (`NAME_RE`: lowercase, digits, `_`) may be SQL keywords: a column can be called `order`
+  or `group`. Every schema, table, column and view name the library puts into SQL goes through
+  `lake.quote_ident` (double quotes, an embedded `"` doubled), including names read back from the
+  catalogue, which never passed `NAME_RE`. Quoting stores nothing differently: tables written
+  before it read and grow unchanged. Free SQL (`where`, recipe SQL) is the caller's: quote such
+  columns there yourself (`where='"order" = 1'`).
 
 ## Reader for servers (MCP)
 
