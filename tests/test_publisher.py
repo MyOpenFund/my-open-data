@@ -1078,9 +1078,12 @@ def test_first_error_of_a_failed_publish_is_the_one_reported(catalog, request, m
     assert "transaction is aborted" not in rep.errors[0]["error"].lower()
     published = {p["contract"] for p in rep.published}
     assert "entity_observations_v1" in published and len(published) == 2  # the other one went on
+    failed = rep.errors[0]["batch_id"]
+    assert any(p.name == failed for p in cfg.landing.glob("*/*"))  # left in place for a retry
     monkeypatch.undo()
     rep = publish_pending(cfg, now=NOW)
     assert rep.exit_code == 0 and len(rep.published) == 1, rep.to_json()
+    assert rep.published[0]["batch_id"] == failed  # the rerun publishes exactly the failed batch
 
 
 def test_unregister_keeps_the_original_error_but_raises_on_its_own():
