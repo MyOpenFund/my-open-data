@@ -8,6 +8,7 @@ import duckdb
 import pyarrow as pa
 
 from myopendata.config import DEFAULT_RESOLVING_SCHEMES, DEFAULT_SINGLE_VALUED_SCHEMES
+from myopendata.lake import registered
 
 # Non-resolving schemes (tickers) never merge entities and never key the identifier links; they
 # stay visible in the identity dataset itself. Policy comes from StoreConfig.
@@ -124,17 +125,16 @@ def rebuild_attributes(
     """
     if not entity_ids:
         return
-    con.register("_eids", pa.table({"entity_id": sorted(entity_ids)}))
-    rows = con.execute(
-        "SELECT entity_id, valid_date,"
-        " arg_max(name, (known_at, source_code)) FILTER (WHERE name IS NOT NULL),"
-        " arg_max(country, (known_at, source_code)) FILTER (WHERE country IS NOT NULL),"
-        " max(known_at), arg_max(source_code, known_at), arg_max(batch_id, known_at)"
-        f" FROM {observations_table} WHERE entity_id IN (SELECT entity_id FROM _eids)"
-        " AND (name IS NOT NULL OR country IS NOT NULL)"
-        " GROUP BY entity_id, valid_date ORDER BY entity_id, valid_date"
-    ).fetchall()
-    con.unregister("_eids")
+    with registered(con, "_eids", pa.table({"entity_id": sorted(entity_ids)})):
+        rows = con.execute(
+            "SELECT entity_id, valid_date,"
+            " arg_max(name, (known_at, source_code)) FILTER (WHERE name IS NOT NULL),"
+            " arg_max(country, (known_at, source_code)) FILTER (WHERE country IS NOT NULL),"
+            " max(known_at), arg_max(source_code, known_at), arg_max(batch_id, known_at)"
+            f" FROM {observations_table} WHERE entity_id IN (SELECT entity_id FROM _eids)"
+            " AND (name IS NOT NULL OR country IS NOT NULL)"
+            " GROUP BY entity_id, valid_date ORDER BY entity_id, valid_date"
+        ).fetchall()
     intervals: list[list] = []
     for eid, vd, name, country, known_at, src, bid in rows:
         last = intervals[-1] if intervals and intervals[-1][0] == eid else None

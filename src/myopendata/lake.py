@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import duckdb
 
 from myopendata.config import StoreConfig
@@ -73,3 +76,28 @@ def connect(cfg: StoreConfig, *, read_only: bool) -> duckdb.DuckDBPyConnection:
         for ddl in REF_DDL:
             con.execute(ddl)
     return con
+
+
+@contextmanager
+def registered(con: duckdb.DuckDBPyConnection, name: str, table: object) -> Iterator[None]:
+    """Register `table` as the view `name` for the block, and unregister it after.
+
+    When a statement of the block fails inside a transaction, DuckDB aborts the transaction and
+    refuses every later call until ROLLBACK, `unregister` included ("Current transaction is
+    aborted"). Unregistering in a plain `finally` would then replace the error that matters with
+    that one in the run report. So: when the block raised, a failing unregister is dropped (the
+    caller's ROLLBACK clears the view anyway) and the block's error propagates; when the block
+    succeeded, a failing unregister raises as usual.
+    When the unregister is dropped, the connection keeps the Arrow table until the same name is
+    registered again or the connection closes (one batch at most).
+    """
+    con.register(name, table)
+    try:
+        yield
+    except BaseException:
+        try:
+            con.unregister(name)
+        except duckdb.Error:
+            pass
+        raise
+    con.unregister(name)
