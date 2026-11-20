@@ -40,6 +40,7 @@ from myopendata.writer.batch import DATA, MANIFEST, batch_id_for, content_hash, 
 EXIT_OK, EXIT_FATAL, EXIT_DEGRADED = 0, 1, 3  # silent-failure doctrine
 BATCH_ID_RE = re.compile(r"[0-9a-f]{32}")
 LOCK = ".publisher.lock"
+DEFERRED = "deferred: an identity batch failed in this run"
 MANIFEST_KEYS = (
     "batch_id",
     "contract",
@@ -54,6 +55,11 @@ MANIFEST_KEYS = (
 )
 
 
+class RollbackFailed(Exception):
+    """A publishing transaction could not be rolled back. Not a duckdb.Error on purpose: it is
+    not caught per batch, so it ends the run as fatal instead of going on on that connection."""
+
+
 @dataclass
 class PublishReport:
     run_id: str
@@ -62,7 +68,9 @@ class PublishReport:
     skipped_duplicates: list[str] = field(default_factory=list)
     skipped_rows: int = 0  # audited rows already published with identical values
     quarantined: list[dict] = field(default_factory=list)
-    errors: list[dict] = field(default_factory=list)  # infrastructure failures on one batch
+    # infrastructure failures on one batch, and fact batches deferred behind a failed identity
+    # batch (error text starting with "deferred:"); all of them stay in landing/ for a rerun
+    errors: list[dict] = field(default_factory=list)
     fatal: str | None = None
     finished_at: str | None = None
 
@@ -394,6 +402,9 @@ class _Run:
         self.resolving, self.single_valued, self.now = resolving_schemes, single_valued_schemes, now
         self.links = load_links(con)
         self.identity = {c.name for c in contracts.values() if c.resolves_entities}
+        # Set once an identity batch fails on infrastructure: the entities it carried are unknown
+        # for the rest of the run, so an unresolved fact batch is deferred, not quarantined.
+        self.identity_failed = False
 
     def all(self) -> None:
         batches = []
@@ -414,6 +425,8 @@ class _Run:
                 self.rep.errors.append(
                     {"batch_id": path.name, "error": f"{type(exc).__name__}: {exc}"}
                 )
+                if m["contract"] in self.identity:
+                    self.identity_failed = True
 
     def quarantine(self, path: Path, m: dict | None, reasons: list[str]) -> None:
         (path / "reason.json").write_text(
@@ -474,6 +487,9 @@ class _Run:
                 return self.quarantine(path, m, [f"subject_not_resolvable:{exc}"])
         elif c.entity_column_pair:
             eids, missing = resolve_facts(t, c.entity_column_pair, self.links)
+            if missing and self.identity_failed:  # its entities may be in the failed batch
+                self.rep.errors.append({"batch_id": bid, "error": DEFERRED})
+                return None  # left pending: the rerun audits it again
             if missing:
                 return self.quarantine(path, m, [f"unknown_entity:{missing}"])
         else:
@@ -557,12 +573,27 @@ class _Run:
                 ],
             )
             con.execute("COMMIT")
-        except BaseException:
+        except BaseException as exc:
             try:
                 con.execute("ROLLBACK")
-            except duckdb.Error:
-                pass  # the original error is the one worth reporting
+            except duckdb.Error as rb:
+                if _nothing_to_roll_back(rb):
+                    # A failed COMMIT (a commit conflict, the commonest case) already ended the
+                    # transaction: the connection is clean and the original error is per batch.
+                    raise exc from None
+                if not isinstance(exc, Exception):
+                    raise exc from rb  # an interrupt stays an interrupt
+                # The transaction may still be open: not a per-batch error, the run must stop.
+                raise RollbackFailed(
+                    f"ROLLBACK failed after {type(exc).__name__}: {exc} (batch {bid}): "
+                    f"{type(rb).__name__}: {rb}"
+                ) from exc
             raise
+
+
+def _nothing_to_roll_back(exc: duckdb.Error) -> bool:
+    """ROLLBACK refused because no transaction is open (DuckDB ends it when COMMIT fails)."""
+    return isinstance(exc, duckdb.TransactionException) and "no transaction is active" in str(exc)
 
 
 def _finish(cfg: StoreConfig, rep: PublishReport) -> PublishReport:
