@@ -68,7 +68,9 @@ class PublishReport:
     skipped_duplicates: list[str] = field(default_factory=list)
     skipped_rows: int = 0  # audited rows already published with identical values
     quarantined: list[dict] = field(default_factory=list)
-    errors: list[dict] = field(default_factory=list)  # infrastructure failures on one batch
+    # infrastructure failures on one batch, and fact batches deferred behind a failed identity
+    # batch (error text starting with "deferred:"); all of them stay in landing/ for a rerun
+    errors: list[dict] = field(default_factory=list)
     fatal: str | None = None
     finished_at: str | None = None
 

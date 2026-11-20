@@ -91,8 +91,9 @@ myopendata publish                                          # exit 0 ok · 1 fat
 quarantines failures in `landing/_quarantine/` with a `reason.json`, publishes the rest atomically
 (one DuckLake snapshot per batch, commit message = batch id) and writes a run report under
 `reports/publisher/`. A batch that hits an infrastructure error (listed under `errors`, exit 1)
-stays in `landing/` for the next run, and so do the fact batches behind a failed identity batch
-(`deferred`), instead of being quarantined as `unknown_entity`. Design, security model and gotchas: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+stays in `landing/` for the next run, and so do the fact batches behind a failed identity batch,
+instead of being quarantined as `unknown_entity`. Those deferrals are `errors` entries too (no
+separate field): their `error` text starts with `deferred:`. Design, security model and gotchas: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Producers may re-emit full history: rows already published with the same values (compared
 exactly, so re-emit bit-identical floats) are skipped and counted (`skipped_rows` in the report,
