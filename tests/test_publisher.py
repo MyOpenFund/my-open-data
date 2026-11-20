@@ -1121,6 +1121,131 @@ def test_facts_behind_a_failed_identity_batch_are_deferred_not_quarantined(
     assert rep.exit_code == 0 and len(rep.published) == 3, rep.to_json()
 
 
+APPLE = dict(subject_value="0000320193", id_value="HWUPKR0MPOU8FGXBT394", name="APPLE INC")
+
+
+@pytest.mark.parametrize("catalog", ["cfg", pytest.param("pg_cfg", marks=pytest.mark.postgres)])
+def test_identity_failure_defers_only_unresolved_facts(catalog, request, monkeypatch):
+    """Mixed run behind a failed identity batch: a fact batch whose entity is already known still
+    publishes; facts of the failed issuer and of an issuer nobody declared are deferred. The next
+    healthy run publishes the issuer and its facts and quarantines the orphan (unknown_entity)."""
+    from conftest import filing_row
+
+    from myopendata.contracts.standard import FILINGS
+    from myopendata.publisher import publish as pub
+
+    cfg = request.getfixturevalue(catalog)
+    for contract in (ENTITY_OBSERVATIONS, FUNDAMENTALS, FILINGS):
+        approve_contract(cfg, contract, "test")
+    land(cfg, ENTITY_OBSERVATIONS, [obs_rows()])  # Microsoft, published by an earlier run
+    assert publish_pending(cfg, now=NOW).exit_code == 0
+    apple = land(cfg, ENTITY_OBSERVATIONS, [obs_rows(**APPLE)]).batch_id
+    known = land(cfg, FUNDAMENTALS, [fund_row()]).batch_id
+    apple_filing = land(
+        cfg, FILINGS, [filing_row(entity_value="0000320193", filing_ref="0000320193-25-000001")]
+    ).batch_id
+    orphan = land(cfg, FUNDAMENTALS, [fund_row(entity_value="0000000001")]).batch_id
+    real_schema = pub._schema
+    monkeypatch.setattr(
+        pub, "_schema", lambda c: "no_such_schema" if c.resolves_entities else real_schema(c)
+    )
+    rep = publish_pending(cfg, now=NOW)
+    assert [p["batch_id"] for p in rep.published] == [known], rep.to_json()
+    assert rep.quarantined == [], rep.to_json()
+    errors = {e["batch_id"]: e["error"] for e in rep.errors}
+    assert set(errors) == {apple, apple_filing, orphan}, rep.to_json()
+    assert errors[apple_filing].startswith("deferred") and errors[orphan].startswith("deferred")
+    assert not errors[apple].startswith("deferred")
+    monkeypatch.undo()
+    rep = publish_pending(cfg, now=NOW)
+    assert {p["batch_id"] for p in rep.published} == {apple, apple_filing}, rep.to_json()
+    assert [q["batch_id"] for q in rep.quarantined] == [orphan], rep.to_json()
+    assert rep.quarantined[0]["reasons"] == ["unknown_entity:1"] and rep.exit_code == 3
+
+
+@pytest.mark.parametrize("catalog", ["cfg", pytest.param("pg_cfg", marks=pytest.mark.postgres)])
+def test_a_failed_fact_batch_does_not_defer_orphans(catalog, request, monkeypatch):
+    """Only an identity batch's failure defers: after a fact batch fails on infrastructure, a fact
+    batch of an unknown issuer is still quarantined as unknown_entity."""
+    from conftest import filing_row
+
+    from myopendata.contracts.standard import FILINGS
+    from myopendata.publisher import publish as pub
+
+    cfg = request.getfixturevalue(catalog)
+    for contract in (ENTITY_OBSERVATIONS, FUNDAMENTALS, FILINGS):
+        approve_contract(cfg, contract, "test")
+    land(cfg, ENTITY_OBSERVATIONS, [obs_rows()])
+    failed = land(cfg, FUNDAMENTALS, [fund_row()]).batch_id
+    orphan = write_batch(  # written later, so audited after the failed batch
+        FILINGS,
+        table(FILINGS, [filing_row(entity_value="0000000001")]),
+        landing_root=cfg.landing,
+        run_id="r1",
+        producer="test",
+        now=NOW + timedelta(minutes=1),
+    ).batch_id
+    real_schema = pub._schema
+    monkeypatch.setattr(
+        pub, "_schema", lambda c: "no_such_schema" if c.name == "fundamentals" else real_schema(c)
+    )
+    rep = publish_pending(cfg, now=NOW)
+    assert [e["batch_id"] for e in rep.errors] == [failed], rep.to_json()
+    assert not rep.errors[0]["error"].startswith("deferred")
+    assert [q["batch_id"] for q in rep.quarantined] == [orphan], rep.to_json()
+    assert rep.quarantined[0]["reasons"] == ["unknown_entity:1"]
+    assert [p["contract"] for p in rep.published] == ["entity_observations_v1"]
+
+
+@pytest.mark.parametrize("catalog", ["cfg", pytest.param("pg_cfg", marks=pytest.mark.postgres)])
+def test_an_interrupt_with_a_failing_rollback_stays_an_interrupt(catalog, request, monkeypatch):
+    """Ctrl-C inside a batch's transaction, then a failing ROLLBACK: the interrupt propagates
+    as itself (never RollbackFailed or a batch error), the batches stay pending, and the rerun
+    publishes them."""
+    import duckdb
+    from conftest import filing_row
+
+    from myopendata.contracts.standard import FILINGS
+    from myopendata.publisher import publish as pub
+
+    cfg = request.getfixturevalue(catalog)
+    for contract in (ENTITY_OBSERVATIONS, FUNDAMENTALS, FILINGS):
+        approve_contract(cfg, contract, "test")
+    land(cfg, ENTITY_OBSERVATIONS, [obs_rows()])
+    facts = {
+        land(cfg, FUNDAMENTALS, [fund_row()]).batch_id,
+        land(cfg, FILINGS, [filing_row()]).batch_id,
+    }
+
+    class NoRollback:
+        def __init__(self, con):
+            self._con = con
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+        def execute(self, sql, *a, **k):
+            if sql == "ROLLBACK":
+                raise duckdb.ConnectionException("connection lost")
+            return self._con.execute(sql, *a, **k)
+
+    real_connect, real_ensure = pub.connect, pub._ensure_table
+
+    def ensure(con, c, sample):
+        if not c.resolves_entities:
+            raise KeyboardInterrupt
+        return real_ensure(con, c, sample)
+
+    monkeypatch.setattr(pub, "connect", lambda *a, **k: NoRollback(real_connect(*a, **k)))
+    monkeypatch.setattr(pub, "_ensure_table", ensure)
+    with pytest.raises(KeyboardInterrupt):
+        publish_pending(cfg, now=NOW)
+    assert {p.name for p in pub._pending(cfg.landing)} == facts
+    monkeypatch.undo()
+    rep = publish_pending(cfg, now=NOW)
+    assert rep.exit_code == 0 and {p["batch_id"] for p in rep.published} == facts, rep.to_json()
+
+
 @pytest.mark.postgres
 def test_a_commit_conflict_on_the_identity_batch_is_a_batch_error_and_defers_facts(
     pg_cfg, monkeypatch
