@@ -1121,10 +1121,76 @@ def test_facts_behind_a_failed_identity_batch_are_deferred_not_quarantined(
     assert rep.exit_code == 0 and len(rep.published) == 3, rep.to_json()
 
 
+@pytest.mark.postgres
+def test_a_commit_conflict_on_the_identity_batch_is_a_batch_error_and_defers_facts(
+    pg_cfg, monkeypatch
+):
+    """A failed COMMIT ends the transaction (DuckDB 2.0 / DuckLake): the ROLLBACK that follows
+    has nothing to roll back. That is the commonest infrastructure failure (a commit conflict),
+    so it must stay a per-batch error, never a fatal run: here another writer creates the
+    identity table just before the publisher's COMMIT; the facts behind it are deferred and the
+    rerun publishes all three batches. Postgres only: a file catalogue refuses a second writer
+    (ResourceInUseException), so it cannot reach a commit conflict."""
+    from conftest import filing_row
+
+    from myopendata.contracts.standard import FILINGS
+    from myopendata.publisher import publish as pub
+
+    cfg = pg_cfg
+    for contract in (ENTITY_OBSERVATIONS, FUNDAMENTALS, FILINGS):
+        approve_contract(cfg, contract, "test")
+    ids = {
+        land(cfg, ENTITY_OBSERVATIONS, [obs_rows()]).batch_id,
+        land(cfg, FUNDAMENTALS, [fund_row()]).batch_id,
+        land(cfg, FILINGS, [filing_row()]).batch_id,
+    }
+    real_connect, real_commit = pub.connect, pub._Run.commit
+    state = {"rival": None}  # (contract, rows) to create concurrently before the next COMMIT
+
+    class Raced:
+        def __init__(self, con):
+            self._con = con
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+        def execute(self, sql, *a, **k):
+            if sql == "COMMIT" and state["rival"]:
+                c, out = state["rival"]
+                state["rival"] = None
+                other = real_connect(cfg, read_only=False)
+                try:
+                    other.execute("BEGIN")
+                    pub._ensure_table(other, c, out)
+                    other.execute("COMMIT")
+                finally:
+                    other.close()
+            return self._con.execute(sql, *a, **k)
+
+    def commit(self, c, m, bid, out, *a, **k):
+        if c.resolves_entities:
+            state["rival"] = (c, out)
+        return real_commit(self, c, m, bid, out, *a, **k)
+
+    monkeypatch.setattr(pub, "connect", lambda *a, **k: Raced(real_connect(*a, **k)))
+    monkeypatch.setattr(pub._Run, "commit", commit)
+    rep = publish_pending(cfg, now=NOW)
+    assert rep.fatal is None and rep.exit_code == 1, rep.to_json()
+    assert rep.published == [] and rep.quarantined == [], rep.to_json()
+    assert {e["batch_id"] for e in rep.errors} == ids, rep.to_json()
+    deferred = [e for e in rep.errors if e["error"].startswith("deferred")]
+    (failed,) = [e for e in rep.errors if e not in deferred]
+    assert len(deferred) == 2 and "Transaction conflict" in failed["error"], rep.to_json()
+    assert {p.name for p in pub._pending(cfg.landing)} == ids
+    monkeypatch.undo()
+    rep = publish_pending(cfg, now=NOW)
+    assert rep.exit_code == 0 and len(rep.published) == 3, rep.to_json()
+
+
 @pytest.mark.parametrize("catalog", ["cfg", pytest.param("pg_cfg", marks=pytest.mark.postgres)])
 def test_a_failed_rollback_is_fatal_and_stops_the_run(catalog, request, monkeypatch):
-    """When ROLLBACK itself fails, the connection's state is unknown: the run must stop with a
-    fatal report naming both errors, not go on publishing other batches on that connection."""
+    """When ROLLBACK itself fails while a transaction is open, it may still be open: the run must
+    stop with a fatal report naming both errors, not go on publishing on that connection."""
     import duckdb
     from conftest import filing_row
 

@@ -575,14 +575,23 @@ class _Run:
             try:
                 con.execute("ROLLBACK")
             except duckdb.Error as rb:
+                if _nothing_to_roll_back(rb):
+                    # A failed COMMIT (a commit conflict, the commonest case) already ended the
+                    # transaction: the connection is clean and the original error is per batch.
+                    raise exc from None
                 if not isinstance(exc, Exception):
                     raise exc from rb  # an interrupt stays an interrupt
-                # The connection's state is unknown: not a per-batch error, the run must stop.
+                # The transaction may still be open: not a per-batch error, the run must stop.
                 raise RollbackFailed(
                     f"ROLLBACK failed after {type(exc).__name__}: {exc} (batch {bid}): "
                     f"{type(rb).__name__}: {rb}"
                 ) from exc
             raise
+
+
+def _nothing_to_roll_back(exc: duckdb.Error) -> bool:
+    """ROLLBACK refused because no transaction is open (DuckDB ends it when COMMIT fails)."""
+    return isinstance(exc, duckdb.TransactionException) and "no transaction is active" in str(exc)
 
 
 def _finish(cfg: StoreConfig, rep: PublishReport) -> PublishReport:

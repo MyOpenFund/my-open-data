@@ -26,9 +26,11 @@ producer ──writer──▶ landing/<table>/<batch_id>/{data.parquet, batch.j
   and is retried by the next run. Once an identity batch has hit one, a fact batch with an
   unresolved entity is not quarantined (`unknown_entity`) for the rest of the run: it may need
   the entities of the failed batch, so it also stays in place, reported under `errors` as
-  `deferred: an identity batch failed in this run`, and the next run retries it. If the
-  ROLLBACK of a failed batch fails too, the connection's state is unknown: the run stops there
-  as fatal, and the batches not yet audited stay in place for the next run.
+  `deferred: an identity batch failed in this run`, and the next run retries it. A failed
+  COMMIT (a commit conflict with another writer) already ends the transaction, so the ROLLBACK
+  that follows has nothing to undo and the batch is a per-batch error like any other. If the
+  ROLLBACK of a failed batch fails for any other reason, the transaction may still be open: the
+  run stops there as fatal, and the batches not yet audited stay in place for the next run.
 * **Row-level idempotence (fact contracts).** Producers may re-emit their whole history on every
   run. A replayed batch (same `batch_id`) is skipped through the `ref.batches` ledger. A new batch
   is anti-joined on `(natural_key, known_at)` against the published table, scoped to the batch's
