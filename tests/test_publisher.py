@@ -1132,6 +1132,8 @@ def test_unregister_keeps_the_original_error_but_raises_on_its_own():
         with registered(con, "_t", pa.table({"a": [1]})):
             con.execute("CREATE TABLE no_such_schema.t AS SELECT * FROM _t")
     con.execute("ROLLBACK")
+    with pytest.raises(duckdb.CatalogException):  # the ROLLBACK dropped the view
+        con.execute("SELECT * FROM _t")
     with registered(con, "_t", pa.table({"a": [1]})):
         assert con.execute("SELECT a FROM _t").fetchall() == [(1,)]
     with pytest.raises(duckdb.CatalogException):  # unregistered on a clean exit

@@ -88,8 +88,9 @@ def registered(con: duckdb.DuckDBPyConnection, name: str, table: object) -> Iter
     that one in the run report. So: when the block raised, a failing unregister is dropped (the
     caller's ROLLBACK clears the view anyway) and the block's error propagates; when the block
     succeeded, a failing unregister raises as usual.
-    When the unregister is dropped, the connection keeps the Arrow table until the same name is
-    registered again or the connection closes (one batch at most).
+    On DuckDB 2.0 the caller's ROLLBACK drops the view with the aborted transaction, so a dropped
+    unregister leaves nothing behind. Only if that ROLLBACK fails too does the connection keep the
+    Arrow table, until the same name is registered again or the connection closes.
     """
     con.register(name, table)
     try:
