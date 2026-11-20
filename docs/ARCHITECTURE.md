@@ -23,7 +23,10 @@ producer ──writer──▶ landing/<table>/<batch_id>/{data.parquet, batch.j
   row hash, then publishes. Failures are quarantined with a `reason.json` and never stop the other
   batches. Existing directories are never overwritten. A file lock (`landing/.publisher.lock`)
   refuses a second concurrent publisher. A batch that hit an infrastructure error stays in place
-  and is retried by the next run.
+  and is retried by the next run. Once an identity batch has hit one, a fact batch with an
+  unresolved entity is not quarantined (`unknown_entity`) for the rest of the run: it may need
+  the entities of the failed batch, so it also stays in place, reported under `errors` as
+  `deferred: an identity batch failed in this run`, and the next run retries it.
 * **Row-level idempotence (fact contracts).** Producers may re-emit their whole history on every
   run. A replayed batch (same `batch_id`) is skipped through the `ref.batches` ledger. A new batch
   is anti-joined on `(natural_key, known_at)` against the published table, scoped to the batch's
@@ -136,8 +139,9 @@ instead of the latest per key, for a recipe that compares a value with the one i
 ## Exit codes (silent-failure doctrine)
 
 `0` everything published or nothing to do · `3` degraded: some batches quarantined · `1` fatal:
-the run could not start, crashed, or a batch hit an infrastructure error. Every run writes
-`reports/publisher/<started_at>-<run_id>.json`.
+the run could not start, crashed, or a batch hit an infrastructure error (or was deferred
+behind an identity batch that did; both are listed under `errors` and stay in `landing/`).
+Every run writes `reports/publisher/<started_at>-<run_id>.json`.
 
 ## Gotchas
 
