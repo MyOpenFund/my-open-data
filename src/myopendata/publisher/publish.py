@@ -55,6 +55,11 @@ MANIFEST_KEYS = (
 )
 
 
+class RollbackFailed(Exception):
+    """A publishing transaction could not be rolled back. Not a duckdb.Error on purpose: it is
+    not caught per batch, so it ends the run as fatal instead of going on on that connection."""
+
+
 @dataclass
 class PublishReport:
     run_id: str
@@ -566,11 +571,17 @@ class _Run:
                 ],
             )
             con.execute("COMMIT")
-        except BaseException:
+        except BaseException as exc:
             try:
                 con.execute("ROLLBACK")
-            except duckdb.Error:
-                pass  # the original error is the one worth reporting
+            except duckdb.Error as rb:
+                if not isinstance(exc, Exception):
+                    raise exc from rb  # an interrupt stays an interrupt
+                # The connection's state is unknown: not a per-batch error, the run must stop.
+                raise RollbackFailed(
+                    f"ROLLBACK failed after {type(exc).__name__}: {exc} (batch {bid}): "
+                    f"{type(rb).__name__}: {rb}"
+                ) from exc
             raise
 
 

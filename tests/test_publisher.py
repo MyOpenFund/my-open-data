@@ -1121,6 +1121,54 @@ def test_facts_behind_a_failed_identity_batch_are_deferred_not_quarantined(
     assert rep.exit_code == 0 and len(rep.published) == 3, rep.to_json()
 
 
+@pytest.mark.parametrize("catalog", ["cfg", pytest.param("pg_cfg", marks=pytest.mark.postgres)])
+def test_a_failed_rollback_is_fatal_and_stops_the_run(catalog, request, monkeypatch):
+    """When ROLLBACK itself fails, the connection's state is unknown: the run must stop with a
+    fatal report naming both errors, not go on publishing other batches on that connection."""
+    import duckdb
+    from conftest import filing_row
+
+    from myopendata.contracts.standard import FILINGS
+    from myopendata.publisher import publish as pub
+
+    cfg = request.getfixturevalue(catalog)
+    for contract in (ENTITY_OBSERVATIONS, FUNDAMENTALS, FILINGS):
+        approve_contract(cfg, contract, "test")
+    land(cfg, ENTITY_OBSERVATIONS, [obs_rows()])
+    facts = {
+        land(cfg, FUNDAMENTALS, [fund_row()]).batch_id,
+        land(cfg, FILINGS, [filing_row()]).batch_id,
+    }
+
+    class NoRollback:
+        def __init__(self, con):
+            self._con = con
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+        def execute(self, sql, *a, **k):
+            if sql == "ROLLBACK":
+                raise duckdb.ConnectionException("connection lost")
+            return self._con.execute(sql, *a, **k)
+
+    real_connect, real_schema = pub.connect, pub._schema
+    monkeypatch.setattr(pub, "connect", lambda *a, **k: NoRollback(real_connect(*a, **k)))
+    monkeypatch.setattr(
+        pub, "_schema", lambda c: real_schema(c) if c.resolves_entities else "no_such_schema"
+    )
+    rep = publish_pending(cfg, now=NOW)
+    assert rep.exit_code == 1 and rep.fatal, rep.to_json()
+    assert "ROLLBACK failed" in rep.fatal and "connection lost" in rep.fatal, rep.fatal
+    assert "CatalogException" in rep.fatal, rep.fatal  # the original error is kept
+    assert [p["contract"] for p in rep.published] == ["entity_observations_v1"], rep.to_json()
+    assert rep.errors == [] and rep.quarantined == [], rep.to_json()  # the run stopped there
+    assert {p.name for p in pub._pending(cfg.landing)} == facts
+    monkeypatch.undo()
+    rep = publish_pending(cfg, now=NOW)
+    assert rep.exit_code == 0 and len(rep.published) == 2, rep.to_json()
+
+
 def test_unregister_keeps_the_original_error_but_raises_on_its_own():
     import duckdb
 
