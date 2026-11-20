@@ -1086,6 +1086,41 @@ def test_first_error_of_a_failed_publish_is_the_one_reported(catalog, request, m
     assert rep.published[0]["batch_id"] == failed  # the rerun publishes exactly the failed batch
 
 
+@pytest.mark.parametrize("catalog", ["cfg", pytest.param("pg_cfg", marks=pytest.mark.postgres)])
+def test_facts_behind_a_failed_identity_batch_are_deferred_not_quarantined(
+    catalog, request, monkeypatch
+):
+    """An infrastructure failure on an identity batch leaves its entities unknown for the rest
+    of the run. The fact batches that needed them are left pending (reported as errors), not
+    quarantined as unknown_entity, so the rerun publishes all of them without a manual move."""
+    from conftest import filing_row
+
+    from myopendata.contracts.standard import FILINGS
+    from myopendata.publisher import publish as pub
+
+    cfg = request.getfixturevalue(catalog)
+    for contract in (ENTITY_OBSERVATIONS, FUNDAMENTALS, FILINGS):
+        approve_contract(cfg, contract, "test")
+    ids = {
+        land(cfg, ENTITY_OBSERVATIONS, [obs_rows()]).batch_id,
+        land(cfg, FUNDAMENTALS, [fund_row()]).batch_id,
+        land(cfg, FILINGS, [filing_row()]).batch_id,
+    }
+    real_schema = pub._schema
+    monkeypatch.setattr(
+        pub, "_schema", lambda c: "no_such_schema" if c.resolves_entities else real_schema(c)
+    )
+    rep = publish_pending(cfg, now=NOW)
+    assert rep.quarantined == [] and rep.published == [], rep.to_json()
+    assert rep.exit_code == 1 and {e["batch_id"] for e in rep.errors} == ids, rep.to_json()
+    deferred = [e for e in rep.errors if e["error"].startswith("deferred")]
+    assert len(deferred) == 2, rep.to_json()
+    assert {p.name for p in pub._pending(cfg.landing)} == ids  # all three still pending
+    monkeypatch.undo()
+    rep = publish_pending(cfg, now=NOW)
+    assert rep.exit_code == 0 and len(rep.published) == 3, rep.to_json()
+
+
 def test_unregister_keeps_the_original_error_but_raises_on_its_own():
     import duckdb
 

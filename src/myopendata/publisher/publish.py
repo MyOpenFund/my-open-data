@@ -40,6 +40,7 @@ from myopendata.writer.batch import DATA, MANIFEST, batch_id_for, content_hash, 
 EXIT_OK, EXIT_FATAL, EXIT_DEGRADED = 0, 1, 3  # silent-failure doctrine
 BATCH_ID_RE = re.compile(r"[0-9a-f]{32}")
 LOCK = ".publisher.lock"
+DEFERRED = "deferred: an identity batch failed in this run"
 MANIFEST_KEYS = (
     "batch_id",
     "contract",
@@ -394,6 +395,9 @@ class _Run:
         self.resolving, self.single_valued, self.now = resolving_schemes, single_valued_schemes, now
         self.links = load_links(con)
         self.identity = {c.name for c in contracts.values() if c.resolves_entities}
+        # Set once an identity batch fails on infrastructure: the entities it carried are unknown
+        # for the rest of the run, so an unresolved fact batch is deferred, not quarantined.
+        self.identity_failed = False
 
     def all(self) -> None:
         batches = []
@@ -414,6 +418,8 @@ class _Run:
                 self.rep.errors.append(
                     {"batch_id": path.name, "error": f"{type(exc).__name__}: {exc}"}
                 )
+                if m["contract"] in self.identity:
+                    self.identity_failed = True
 
     def quarantine(self, path: Path, m: dict | None, reasons: list[str]) -> None:
         (path / "reason.json").write_text(
@@ -474,6 +480,9 @@ class _Run:
                 return self.quarantine(path, m, [f"subject_not_resolvable:{exc}"])
         elif c.entity_column_pair:
             eids, missing = resolve_facts(t, c.entity_column_pair, self.links)
+            if missing and self.identity_failed:  # its entities may be in the failed batch
+                self.rep.errors.append({"batch_id": bid, "error": DEFERRED})
+                return None  # left pending: the rerun audits it again
             if missing:
                 return self.quarantine(path, m, [f"unknown_entity:{missing}"])
         else:
